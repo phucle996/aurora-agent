@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package aurora.agent.metrics.v1;
+
+option go_package = "aurora-agent/proto/metricsv1";
+
+message AgentGPUMetrics {
+  uint64 count = 1;
+  double util_percent = 2;
+  uint64 memory_used_bytes = 3;
+  uint64 memory_total_bytes = 4;
+}
+
+message AgentServiceMetrics {
+  string service = 1;
+  double cpu_usage_percent = 2; // 0..100 of total host cpu
+  uint64 memory_used_bytes = 3;
+  double disk_read_bps = 4;
+  double disk_write_bps = 5;
+  double network_rx_bps = 6;
+  double network_tx_bps = 7;
+  double gpu_util_percent = 8;
+  uint64 gpu_memory_used_bytes = 9;
+}
+
+message AgentBasicMetricRecord {
+  int64 ts_ms = 1;
+  double cpu_usage_percent = 2;
+  uint64 memory_used_bytes = 3;
+  uint64 memory_total_bytes = 4;
+  double disk_read_bps = 5;
+  double disk_write_bps = 6;
+  double network_rx_bps = 7;
+  double network_tx_bps = 8;
+  AgentGPUMetrics gpu = 9;
+  repeated AgentServiceMetrics services = 10;
+  uint64 uptime_seconds = 11;
+}
+
+message AgentMetricsEnvelope {
+  string agent_id = 1;
+  string mode = 2; // stream | batch
+  repeated AgentBasicMetricRecord records = 3;
+}

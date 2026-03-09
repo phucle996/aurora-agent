@@ -361,15 +361,38 @@ func (c *HeartbeatClient) ReportMetrics(
 
 	list := make([]any, 0, len(records))
 	for _, record := range records {
+		services := make([]any, 0, len(record.Services))
+		for _, serviceRecord := range record.Services {
+			services = append(services, map[string]any{
+				"service":               serviceRecord.Service,
+				"cpu_usage_percent":     serviceRecord.CPUUsagePercent,
+				"memory_used_bytes":     serviceRecord.MemoryUsedBytes,
+				"disk_read_bps":         serviceRecord.DiskReadBps,
+				"disk_write_bps":        serviceRecord.DiskWriteBps,
+				"network_rx_bps":        serviceRecord.NetworkRxBps,
+				"network_tx_bps":        serviceRecord.NetworkTxBps,
+				"gpu_util_percent":      serviceRecord.GPUUtilPercent,
+				"gpu_memory_used_bytes": serviceRecord.GPUMemoryUsedBytes,
+			})
+		}
+
 		list = append(list, map[string]any{
-			"ts_ms":               record.TimestampUnixMillis,
-			"cpu_usage_percent":   record.CPUUsagePercent,
-			"memory_used_percent": record.MemoryUsedPercent,
-			"disk_read_bps":       record.DiskReadBps,
-			"disk_write_bps":      record.DiskWriteBps,
-			"network_rx_bps":      record.NetworkRxBps,
-			"network_tx_bps":      record.NetworkTxBps,
-			"uptime_seconds":      record.UptimeSeconds,
+			"ts_ms":              record.TimestampUnixMillis,
+			"cpu_usage_percent":  record.CPUUsagePercent,
+			"memory_used_bytes":  record.MemoryUsedBytes,
+			"memory_total_bytes": record.MemoryTotalBytes,
+			"disk_read_bps":      record.DiskReadBps,
+			"disk_write_bps":     record.DiskWriteBps,
+			"network_rx_bps":     record.NetworkRxBps,
+			"network_tx_bps":     record.NetworkTxBps,
+			"gpu": map[string]any{
+				"count":              record.GPU.Count,
+				"util_percent":       record.GPU.UtilPercent,
+				"memory_used_bytes":  record.GPU.MemoryUsedBytes,
+				"memory_total_bytes": record.GPU.MemoryTotalBytes,
+			},
+			"services":       services,
+			"uptime_seconds": record.UptimeSeconds,
 		})
 	}
 

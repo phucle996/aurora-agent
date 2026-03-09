@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_NAME="install.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+GITHUB_REPO="phucle996/aurora-agent"
 
 APP_NAME="${AURORA_AGENT_BIN_NAME:-aurora-agent}"
 INSTALL_DIR="${AURORA_AGENT_INSTALL_DIR:-/usr/local/bin}"
@@ -303,28 +304,24 @@ apply_runtime_config() {
 }
 
 resolve_repo_default() {
-  local env_repo="${AURORA_AGENT_GITHUB_REPO:-}"
-  if [ -n "$env_repo" ]; then
-    printf '%s' "$env_repo"
+  printf '%s' "$GITHUB_REPO"
+}
+
+resolve_release_tag() {
+  if [ "$VERSION" != "latest" ]; then
+    printf '%s' "$VERSION"
     return
   fi
 
-  if command -v git >/dev/null 2>&1 && [ -d "${ROOT_DIR}/.git" ]; then
-    local remote
-    remote="$(git -C "$ROOT_DIR" config --get remote.origin.url 2>/dev/null || true)"
-    if [ -n "$remote" ]; then
-      remote="${remote#git@github.com:}"
-      remote="${remote#https://github.com/}"
-      remote="${remote%.git}"
-      if [ -n "$remote" ] && printf '%s' "$remote" | grep -q '/'; then
-        printf '%s' "$remote"
-        return
-      fi
-    fi
+  local latest_json="${TMP_DIR}/latest.json"
+  download_file "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" "$latest_json"
+  local tag
+  tag="$(sed -n 's/.*"tag_name":[[:space:]]*"\([^"]\+\)".*/\1/p' "$latest_json" | head -n1)"
+  if [ -z "$tag" ]; then
+    echo "Cannot resolve latest release tag from https://github.com/${GITHUB_REPO}" >&2
+    exit 1
   fi
-
-  # Fallback default; override via AURORA_AGENT_GITHUB_REPO if needed.
-  printf 'phucle996/aurora-agent'
+  printf '%s' "$tag"
 }
 
 resolve_arch() {
@@ -393,33 +390,17 @@ verify_checksum() {
 }
 
 install_systemd_unit() {
-  local local_unit="${ROOT_DIR}/systemd/aurora-agent.service"
-  if [ -f "$local_unit" ]; then
-    run_root install -m 0644 "$local_unit" "$SERVICE_PATH"
-    return
-  fi
+  local release_tag="$1"
+  [ -n "$release_tag" ] || {
+    echo "release tag is required for systemd unit install" >&2
+    exit 1
+  }
 
-  run_root bash -lc "cat > '${SERVICE_PATH}' <<'EOF'
-[Unit]
-Description=Aurora Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-EnvironmentFile=-/etc/aurora-agent.env
-ExecStart=/usr/local/bin/aurora-agent
-Restart=always
-RestartSec=3
-KillSignal=SIGTERM
-TimeoutStopSec=35
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOF"
+  local unit_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${release_tag}/systemd/aurora-agent.service"
+  local unit_file="${TMP_DIR}/aurora-agent.service"
+  log "downloading systemd unit from ${unit_url}"
+  download_file "$unit_url" "$unit_file"
+  run_root install -m 0644 "$unit_file" "$SERVICE_PATH"
 }
 
 ensure_env_file() {
@@ -449,13 +430,16 @@ AURORA_NODE_POLL_INTERVAL=3s
 AURORA_VM_POLL_INTERVAL=1s
 AURORA_SHUTDOWN_TIMEOUT=20s
 EOF"
+  run_root chmod 0600 "$ENV_FILE"
 }
 
 ensure_agent_version() {
+  local release_tag="$1"
   local agent_version
-  agent_version="$(printf '%s' "${AURORA_AGENT_VERSION:-${VERSION:-latest}}" | xargs || true)"
+  agent_version="$(printf '%s' "${AURORA_AGENT_VERSION:-${release_tag:-}}" | xargs || true)"
   if [ -z "$agent_version" ]; then
-    agent_version="latest"
+    echo "cannot determine agent version" >&2
+    exit 1
   fi
   set_env_kv "$ENV_FILE" "AURORA_AGENT_VERSION" "$agent_version"
   printf '%s' "$agent_version"
@@ -474,20 +458,17 @@ main() {
   local asset="${APP_NAME}_linux_${arch}.tar.gz"
   local checksum_asset="checksums.txt"
 
-  local base_url
-  if [ "$VERSION" = "latest" ]; then
-    base_url="https://github.com/${repo}/releases/latest/download"
-  else
-    base_url="https://github.com/${repo}/releases/download/${VERSION}"
-  fi
-
   TMP_DIR="$(mktemp -d /tmp/${APP_NAME}-install.XXXXXX)"
   trap cleanup_tmp_dir EXIT
+
+  local release_tag
+  release_tag="$(resolve_release_tag)"
+  local base_url="https://github.com/${repo}/releases/download/${release_tag}"
 
   local tarball="${TMP_DIR}/${asset}"
   local checksums="${TMP_DIR}/${checksum_asset}"
 
-  log "downloading release asset repo=${repo} version=${VERSION} arch=${arch}"
+  log "downloading release asset repo=${repo} version=${release_tag} arch=${arch}"
   download_file "${base_url}/${asset}" "$tarball"
   download_file "${base_url}/${checksum_asset}" "$checksums"
 
@@ -520,15 +501,14 @@ main() {
   node_id="$(ensure_node_id)"
   log "runtime node_id=${node_id}"
   local agent_version
-  agent_version="$(ensure_agent_version)"
+  agent_version="$(ensure_agent_version "$release_tag")"
   log "runtime agent_version=${agent_version}"
   apply_runtime_config
-  install_systemd_unit
+  install_systemd_unit "$release_tag"
 
   if command -v systemctl >/dev/null 2>&1; then
     run_root systemctl daemon-reload
     run_root systemctl enable --now "$SERVICE_NAME"
-    run_root systemctl restart "$SERVICE_NAME"
     if run_root systemctl is-active --quiet "$SERVICE_NAME"; then
       log "service is active: ${SERVICE_NAME}"
     else

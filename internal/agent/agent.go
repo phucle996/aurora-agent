@@ -18,6 +18,7 @@ type Agent struct {
 	cfg             config.Config
 	logger          *slog.Logger
 	metricsNode     *collector.NodeCollector
+	metricsService  *collector.ServiceCollector
 	health          *HealthStatus
 	heartbeatClient *adminrpc.HeartbeatClient
 }
@@ -29,12 +30,14 @@ func New(cfg config.Config, logger *slog.Logger) (*Agent, error) {
 	}
 
 	nodeCollector := collector.NewNodeCollector(cfg.NodeID)
+	serviceCollector := collector.NewServiceCollector()
 	health := NewHealthStatus()
 
 	return &Agent{
 		cfg:             cfg,
 		logger:          logger,
 		metricsNode:     nodeCollector,
+		metricsService:  serviceCollector,
 		health:          health,
 		heartbeatClient: heartbeatClient,
 	}, nil

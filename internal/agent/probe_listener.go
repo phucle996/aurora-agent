@@ -172,7 +172,7 @@ var agentServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "metrics.proto",
+	Metadata: "agent_service.proto",
 }
 
 func _agentServiceGetVersionHandler(

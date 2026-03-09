@@ -7,12 +7,15 @@ on:
       - master
     paths-ignore:
       - ".github/workflows/release.yml"
-      - "scripts/install.sh"
       - "*.md"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -32,11 +35,13 @@ jobs:
         run: go test ./...
 
       - name: Trivy scan (source code)
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@0.34.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           scan-type: fs
           scan-ref: .
-          skip-files: .github/workflows/release.yml,scripts/install.sh,**/*.md
+          skip-files: .github/workflows/release.yml,**/*.md,Dockerfile.dev,**/Dockerfile.dev
           format: table
           exit-code: "1"
           ignore-unfixed: true
@@ -46,7 +51,7 @@ jobs:
 
       - name: Build binaries
         env:
-          APP_NAME: aurora-kvm-agent
+          APP_NAME: aurora-agent
         run: |
           set -Eeuo pipefail
           mkdir -p dist
@@ -57,15 +62,29 @@ jobs:
           tar -C dist -czf "dist/${APP_NAME}_linux_amd64.tar.gz" "${APP_NAME}_linux_amd64"
           tar -C dist -czf "dist/${APP_NAME}_linux_arm64.tar.gz" "${APP_NAME}_linux_arm64"
 
-          shasum -a 256 dist/*.tar.gz > dist/checksums.txt
+          sha256sum dist/*.tar.gz > dist/checksums.txt
+
+      - name: Package install assets
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist/install
+          cp -f scripts/install.sh dist/install/
+          cp -f systemd/aurora-agent.service dist/install/
+          tar -C dist/install -czf dist/aurora-agent-install-assets.tar.gz .
 
       - name: Resolve release version
         id: version
         run: |
-          version="$(sed -n 's/^.*HardcodedVersion[[:space:]]*string[[:space:]]*=[[:space:]]*"\([^"]\+\)".*$/\1/p' internal/config/config.go | head -n 1)"
-          if [ -z "$version" ]; then
-            echo "cannot resolve HardcodedVersion from internal/config/config.go"
-            exit 1
+          set -Eeuo pipefail
+          hardcoded_version="$(sed -n 's/^.*HardcodedVersion[[:space:]]*string[[:space:]]*=[[:space:]]*"\([^"]\+\)".*$/\1/p' internal/config/config.go | head -n 1)"
+
+          if [ -n "${hardcoded_version}" ]; then
+            version="${hardcoded_version}"
+          else
+            ts="$(date -u +%Y%m%d%H%M%S)"
+            seed="${ts}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
+            rand="$(printf '%s' "${seed}" | sha256sum | cut -c1-8)"
+            version="v${ts}-${rand}-alpha"
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
 
@@ -84,7 +103,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
-          name: Aurora KVM Agent ${{ steps.version.outputs.value }}
+          name: Aurora Agent ${{ steps.version.outputs.value }}
           generate_release_notes: true
           overwrite_files: true
           files: |

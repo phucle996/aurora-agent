@@ -30,7 +30,7 @@ internal/collector                # scheduler + collectors
 internal/stream                   # grpc/ws clients + encoder
 internal/agent                    # lifecycle + health + shutdown
 internal/system                   # host counters from /proc
-proto/metrics.proto               # streaming contracts
+proto/metrics/agent_metrics.proto # metrics payload contract
 scripts/install.sh                # install binary + systemd
 systemd/aurora-agent.service  # service unit
 ```
@@ -103,7 +103,7 @@ Chi tiết đầy đủ xem `CONFIGURATION.md`.
 ## Notes
 
 - gRPC streaming hiện dùng JSON codec (không phụ thuộc generated pb trong runtime path).
-- `proto/metrics.proto` đã sẵn sàng để generate client/server typed contract sau này.
+- `proto/metrics/agent_metrics.proto` định nghĩa payload metrics chuẩn cho agent.
 
 ## License
 

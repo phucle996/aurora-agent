@@ -29,7 +29,7 @@ go build -o aurora-agent ./cmd/agent
 1. Add reader function trong `internal/system/`
 2. Map vào `internal/libvirt/node_metrics.go`
 3. Thêm field vào `internal/model/node.go`
-4. Cập nhật `proto/metrics.proto` nếu backend cần strict schema
+4. Cập nhật `proto/metrics/agent_metrics.proto` nếu backend cần strict schema
 
 ### Add VM metric
 

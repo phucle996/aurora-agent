@@ -1,7 +1,7 @@
 package model
 
-// NodeMetricsRaw is a raw node counter snapshot sent to backend without local delta/rate calculations.
-type NodeMetricsRaw struct {
+// NodeMetrics is a raw node counter snapshot sent to backend without local delta/rate calculations.
+type NodeMetrics struct {
 	NodeID        string                `json:"node_id"`
 	TimestampUnix int64                 `json:"timestamp"`
 	CPU           NodeCPUCounterRaw     `json:"cpu"`
