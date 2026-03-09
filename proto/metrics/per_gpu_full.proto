@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package aurora.metrics.v1;
+
+option go_package = "aurora-vm-service/proto/metricsv1";
+
+enum GpuVendor {
+  GPU_VENDOR_UNKNOWN = 0;
+  GPU_VENDOR_NVIDIA = 1;
+  GPU_VENDOR_AMD = 2;
+  GPU_VENDOR_INTEL = 3;
+}
+
+// ===== REQUEST =====
+message SubscribeGpuRequest {
+  string node_id = 1;
+  uint64 gpu_index = 2;
+  string gpu_uuid = 3; // optional
+}
+
+// ===== COMMON GPU METRICS =====
+message NodeGpuMetricLite {
+  string node_id = 1;
+  uint64 gpu_index = 2;
+  string gpu_uuid = 3;
+  GpuVendor vendor = 4;
+  int64 timestamp_unix = 5;
+
+  // Util
+  double gpu_util_percent = 6;
+  double memory_util_percent = 7;
+
+  // Memory
+  uint64 memory_total_bytes = 8;
+  uint64 memory_used_bytes = 9;
+  uint64 memory_free_bytes = 10;
+
+  // Power & Temp
+  double power_usage_watts = 11;
+  double power_limit_watts = 12;
+  double temperature_celsius = 13;
+  double fan_speed_percent = 14;
+
+  // Clocks
+  uint64 clock_core_mhz = 15;
+  uint64 clock_mem_mhz = 16;
+
+  // PCIe rate (backend compute)
+  double pcie_rx_mb_s = 17;
+  double pcie_tx_mb_s = 18;
+  double pcie_bandwidth_util_percent = 19;
+
+  // Encoder/decoder (nvidia)
+  double encoder_util_percent = 20;
+  double decoder_util_percent = 21;
+
+  // Compute
+  double compute_util_percent = 22;
+
+  // Vendor specific
+  NvidiaExtra nvidia = 100;
+  AmdExtra amd = 200;
+}
+
+// ===== NVIDIA EXTRA =====
+message NvidiaExtra {
+  bool mig_enabled = 1;
+  uint64 mig_instances = 2;
+
+  double tensor_util_percent = 3;
+  double sm_util_percent = 4;
+
+  double nvlink_rx_mb_s = 5;
+  double nvlink_tx_mb_s = 6;
+
+  double temperature_memory_celsius = 7;
+
+  uint64 pstate = 8;
+  string compute_mode = 9;
+}
+
+// ===== AMD EXTRA =====
+message AmdExtra {
+  double gfx_util_percent = 1;
+  double memory_controller_util_percent = 2;
+
+  double temperature_edge_celsius = 3;
+  double temperature_hotspot_celsius = 4;
+
+  double power_average_watts = 5;
+
+  uint64 clock_soc_mhz = 6;
+  uint64 clock_memory_mhz = 7;
+}
+
+message NodeGpuMetricFrame {
+  NodeGpuMetricLite metrics = 1;
+}
+
+// ===== SERVICE =====
+service NodeGpuMetricsService {
+  rpc SubscribeGpu(SubscribeGpuRequest)
+      returns (stream NodeGpuMetricFrame);
+}

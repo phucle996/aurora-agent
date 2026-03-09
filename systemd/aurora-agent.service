@@ -1,0 +1,19 @@
+[Unit]
+Description=Aurora Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/aurora-agent.env
+ExecStart=/usr/local/bin/aurora-agent
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=35
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

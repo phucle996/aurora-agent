@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package aurora.metrics.v1;
+
+option go_package = "aurora-vm-service/proto/metricsv1";
+
+// ===== REQUEST =====
+
+message SubscribeNodeDiskRequest {
+  string node_id = 1;
+  string disk_name = 2; // nvme0n1, sda...
+}
+
+// ===== METRICS =====
+
+message NodeDiskMetricLite {
+  string node_id = 1;
+  string disk_name = 2;
+  int64 timestamp_unix = 3;
+
+  double read_mb_s = 4;
+  double write_mb_s = 5;
+  double total_mb_s = 6;
+
+  double read_iops = 7;
+  double write_iops = 8;
+  double total_iops = 9;
+
+  double util_percent = 10;
+
+  double read_latency_ms = 11;
+  double write_latency_ms = 12;
+
+  double fs_usage_percent = 13;
+
+  uint64 size_bytes = 14;
+  string mountpoint = 15;
+}
+
+message NodeDiskMetricFrame {
+  NodeDiskMetricLite metrics = 1;
+}
+
+// ===== SERVICE =====
+
+service NodeDiskMetricsService {
+  rpc SubscribeDisk(SubscribeNodeDiskRequest)
+      returns (stream NodeDiskMetricFrame);
+}

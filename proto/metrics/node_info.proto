@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package aurora.metrics.v1;
+
+option go_package = "aurora-vm-service/proto/metricsv1";
+
+message GetNodeHardwareRequest {
+  string node_id = 1;
+}
+
+message NodeCpuInfo {
+  string model = 1;
+  string vendor = 2;
+  uint64 cores = 3;
+  uint64 threads = 4;
+  uint64 sockets = 5;
+  uint64 base_mhz = 6;
+  uint64 max_mhz = 7;
+  string architecture = 8;
+  bool virtualization_support = 9;
+}
+
+message NodeRamStick {
+  string slot = 1;
+  uint64 size_bytes = 2;
+  uint64 speed_mhz = 3;
+  string type = 4;
+  string model = 5;
+  string manufacturer = 6;
+  string serial = 7;
+}
+
+message NodeDiskInfo {
+  string name = 1;
+  string model = 2;
+  string serial = 3;
+  string type = 4;
+  uint64 size_bytes = 5;
+  string mountpoint = 6;
+  string filesystem = 7;
+}
+
+message NodeNetIfInfo {
+  string name = 1;
+  string mac_address = 2;
+  uint64 mtu = 3;
+  uint64 speed_mbps = 4;
+  string driver = 5;
+  string pci_address = 6;
+  string type = 7;
+}
+
+message NodeGpuInfo {
+  uint64 index = 1;
+  string uuid = 2;
+  string vendor = 3;
+  string model = 4;
+  uint64 memory_total_bytes = 5;
+  string pci_address = 6;
+  string driver_version = 7;
+}
+
+message NodeHardwareInfo {
+  string node_id = 1;
+  string hostname = 2;
+
+  NodeCpuInfo cpu = 3;
+  repeated NodeRamStick ram_sticks = 4;
+  repeated NodeDiskInfo disks = 5;
+  repeated NodeNetIfInfo netifs = 6;
+  repeated NodeGpuInfo gpus = 7;
+
+  int64 collected_at_unix = 100;
+}
+
+service NodeHardwareService {
+  rpc GetNodeHardware(GetNodeHardwareRequest)
+      returns (NodeHardwareInfo);
+}

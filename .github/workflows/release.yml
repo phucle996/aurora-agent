@@ -1,0 +1,94 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - ".github/workflows/release.yml"
+      - "scripts/install.sh"
+      - "*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Trivy scan (source code)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          skip-files: .github/workflows/release.yml,scripts/install.sh,**/*.md
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          scanners: vuln,secret,misconfig
+          vuln-type: os,library
+
+      - name: Build binaries
+        env:
+          APP_NAME: aurora-kvm-agent
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist
+
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "dist/${APP_NAME}_linux_amd64" ./cmd/agent
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "dist/${APP_NAME}_linux_arm64" ./cmd/agent
+
+          tar -C dist -czf "dist/${APP_NAME}_linux_amd64.tar.gz" "${APP_NAME}_linux_amd64"
+          tar -C dist -czf "dist/${APP_NAME}_linux_arm64.tar.gz" "${APP_NAME}_linux_arm64"
+
+          shasum -a 256 dist/*.tar.gz > dist/checksums.txt
+
+      - name: Resolve release version
+        id: version
+        run: |
+          version="$(sed -n 's/^.*HardcodedVersion[[:space:]]*string[[:space:]]*=[[:space:]]*"\([^"]\+\)".*$/\1/p' internal/config/config.go | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "cannot resolve HardcodedVersion from internal/config/config.go"
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing release/tag (overwrite mode)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          tag="${{ steps.version.outputs.value }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" -y --cleanup-tag || true
+          fi
+          git push origin ":refs/tags/$tag" || true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          name: Aurora KVM Agent ${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

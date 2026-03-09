@@ -1,0 +1,485 @@
+package adminrpc
+
+import (
+	"aurora-agent/internal/config"
+	"aurora-agent/internal/model"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	gogrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+const (
+	runtimeReportAgentHeartbeatPath  = "/admin.transport.runtime.v1.RuntimeService/ReportAgentHeartbeat"
+	runtimeBootstrapAgentPath        = "/admin.transport.runtime.v1.RuntimeService/BootstrapAgent"
+	runtimeGetAgentMetricsPolicyPath = "/admin.transport.runtime.v1.RuntimeService/GetAgentMetricsPolicy"
+	runtimeReportAgentMetricsPath    = "/admin.transport.runtime.v1.RuntimeService/ReportAgentMetrics"
+	defaultInvokeTimeout             = 8 * time.Second
+)
+
+type HeartbeatPayload struct {
+	AgentID           string
+	Hostname          string
+	AgentVersion      string
+	AgentProbeAddr    string
+	AgentGRPCEndpoint string
+	Platform          string
+}
+
+type HeartbeatClient struct {
+	logger *slog.Logger
+	conn   *gogrpc.ClientConn
+}
+
+type MetricsPolicy struct {
+	StreamEnabled        bool
+	BatchFlushInterval   time.Duration
+	BatchSampleInterval  time.Duration
+	StreamSampleInterval time.Duration
+	MaxBatchRecords      int
+}
+
+func NewHeartbeatClient(cfg config.Config, logger *slog.Logger) (*HeartbeatClient, error) {
+	target, inferredServerName, err := normalizeAdminRPCTarget(cfg.AdminGRPCAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ensureAgentClientCertificate(cfg, target, inferredServerName, logger); err != nil {
+		return nil, err
+	}
+
+	tlsCfg, err := cfg.AdminTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(tlsCfg.ServerName) == "" {
+		tlsCfg.ServerName = inferredServerName
+	}
+
+	conn, err := gogrpc.NewClient(target, gogrpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	if err != nil {
+		return nil, fmt.Errorf("dial admin rpc failed: %w", err)
+	}
+	return &HeartbeatClient{
+		logger: logger,
+		conn:   conn,
+	}, nil
+}
+
+func ensureAgentClientCertificate(
+	cfg config.Config,
+	target string,
+	inferredServerName string,
+	logger *slog.Logger,
+) error {
+	if certAndKeyExists(cfg.AdminTLSCertPath, cfg.AdminTLSKeyPath) {
+		return nil
+	}
+	if strings.TrimSpace(cfg.BootstrapToken) == "" {
+		return fmt.Errorf("missing agent client cert/key and bootstrap token")
+	}
+
+	keyPEM, csrPEM, err := generateAgentKeyAndCSR(cfg)
+	if err != nil {
+		return err
+	}
+
+	bootstrapTLS, err := buildBootstrapTLSConfig(cfg, inferredServerName)
+	if err != nil {
+		return err
+	}
+	conn, err := gogrpc.NewClient(target, gogrpc.WithTransportCredentials(credentials.NewTLS(bootstrapTLS)))
+	if err != nil {
+		return fmt.Errorf("dial admin bootstrap rpc failed: %w", err)
+	}
+	defer conn.Close()
+
+	callCtx, cancel := context.WithTimeout(context.Background(), defaultInvokeTimeout)
+	defer cancel()
+	req, err := structpb.NewStruct(map[string]any{
+		"node_id":             strings.TrimSpace(cfg.NodeID),
+		"cluster_id":          strings.TrimSpace(cfg.ClusterID),
+		"hostname":            strings.TrimSpace(cfg.Hostname),
+		"ip":                  strings.TrimSpace(cfg.AgentIP),
+		"bootstrap_token":     strings.TrimSpace(cfg.BootstrapToken),
+		"csr_pem":             strings.TrimSpace(string(csrPEM)),
+		"agent_probe_addr":    strings.TrimSpace(cfg.ProbeListenAddr),
+		"agent_grpc_endpoint": strings.TrimSpace(cfg.AgentGRPCEndpoint),
+		"platform":            strings.TrimSpace(cfg.Platform),
+	})
+	if err != nil {
+		return fmt.Errorf("build bootstrap request failed: %w", err)
+	}
+	resp := &structpb.Struct{}
+	if err := conn.Invoke(callCtx, runtimeBootstrapAgentPath, req, resp); err != nil {
+		return fmt.Errorf("bootstrap agent rpc failed: %w", err)
+	}
+
+	clientCertPEM := strings.TrimSpace(readStructString(resp, "client_cert_pem"))
+	caCertPEM := strings.TrimSpace(readStructString(resp, "ca_cert_pem"))
+	if clientCertPEM == "" || caCertPEM == "" {
+		return fmt.Errorf("bootstrap rpc response missing certificates")
+	}
+
+	if err := writeSecureFile(cfg.AdminTLSKeyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("write agent tls key failed: %w", err)
+	}
+	if err := writeSecureFile(cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write agent tls cert failed: %w", err)
+	}
+	if err := writeSecureFile(cfg.AdminTLSCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write admin ca cert failed: %w", err)
+	}
+	if logger != nil {
+		logger.Info("agent bootstrap certificate completed")
+	}
+	return nil
+}
+
+func buildBootstrapTLSConfig(cfg config.Config, inferredServerName string) (*tls.Config, error) {
+	caPath := strings.TrimSpace(cfg.AdminTLSCAPath)
+	if caPath == "" {
+		return nil, fmt.Errorf("AURORA_ADMIN_TLS_CA_PATH is required")
+	}
+	caBytes, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read admin ca file failed: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caBytes) {
+		return nil, fmt.Errorf("invalid admin ca pem")
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    pool,
+	}
+	if serverName := strings.TrimSpace(cfg.AdminServerName); serverName != "" {
+		tlsCfg.ServerName = serverName
+	} else {
+		tlsCfg.ServerName = inferredServerName
+	}
+	return tlsCfg, nil
+}
+
+func certAndKeyExists(certPath string, keyPath string) bool {
+	certPath = strings.TrimSpace(certPath)
+	keyPath = strings.TrimSpace(keyPath)
+	if certPath == "" || keyPath == "" {
+		return false
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		return false
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		return false
+	}
+	return true
+}
+
+func generateAgentKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate agent private key failed: %w", err)
+	}
+
+	dnsNames := uniqueStrings([]string{
+		strings.TrimSpace(cfg.NodeID),
+		strings.TrimSpace(cfg.Hostname),
+	})
+	ipAddresses := make([]net.IP, 0, 1)
+	if ip := net.ParseIP(strings.TrimSpace(cfg.AgentIP)); ip != nil {
+		ipAddresses = append(ipAddresses, ip)
+	}
+
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: "agent:" + strings.TrimSpace(cfg.NodeID),
+		},
+		DNSNames:    dnsNames,
+		IPAddresses: ipAddresses,
+	}, privateKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create csr failed: %w", err)
+	}
+
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	if len(keyPEM) == 0 || len(csrPEM) == 0 {
+		return nil, nil, fmt.Errorf("encode csr/key pem failed")
+	}
+	return keyPEM, csrPEM, nil
+}
+
+func writeSecureFile(path string, content []byte, perm os.FileMode) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, content, perm); err != nil {
+		return err
+	}
+	return nil
+}
+
+func readStructString(req *structpb.Struct, key string) string {
+	if req == nil {
+		return ""
+	}
+	field, ok := req.GetFields()[key]
+	if !ok || field == nil {
+		return ""
+	}
+	return strings.TrimSpace(field.GetStringValue())
+}
+
+func uniqueStrings(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func (c *HeartbeatClient) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.Close()
+}
+
+func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload HeartbeatPayload) error {
+	if c == nil || c.conn == nil {
+		return fmt.Errorf("heartbeat client is nil")
+	}
+
+	req, err := structpb.NewStruct(map[string]any{
+		"agent_id":            strings.TrimSpace(payload.AgentID),
+		"hostname":            strings.TrimSpace(payload.Hostname),
+		"agent_version":       strings.TrimSpace(payload.AgentVersion),
+		"agent_probe_addr":    strings.TrimSpace(payload.AgentProbeAddr),
+		"agent_grpc_endpoint": strings.TrimSpace(payload.AgentGRPCEndpoint),
+		"platform":            strings.TrimSpace(payload.Platform),
+	})
+	if err != nil {
+		return fmt.Errorf("build heartbeat request failed: %w", err)
+	}
+
+	callCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, defaultInvokeTimeout)
+		defer cancel()
+	}
+
+	resp := &structpb.Struct{}
+	if err := c.conn.Invoke(callCtx, runtimeReportAgentHeartbeatPath, req, resp); err != nil {
+		return fmt.Errorf("report heartbeat failed: %w", err)
+	}
+	if c.logger != nil {
+		c.logger.Debug("agent heartbeat acknowledged by admin")
+	}
+	return nil
+}
+
+func (c *HeartbeatClient) GetMetricsPolicy(ctx context.Context, agentID string) (MetricsPolicy, error) {
+	if c == nil || c.conn == nil {
+		return MetricsPolicy{}, fmt.Errorf("heartbeat client is nil")
+	}
+	callCtx, cancel := context.WithTimeout(ctx, defaultInvokeTimeout)
+	defer cancel()
+	req, err := structpb.NewStruct(map[string]any{
+		"agent_id": strings.TrimSpace(agentID),
+	})
+	if err != nil {
+		return MetricsPolicy{}, err
+	}
+	resp := &structpb.Struct{}
+	if err := c.conn.Invoke(callCtx, runtimeGetAgentMetricsPolicyPath, req, resp); err != nil {
+		return MetricsPolicy{}, err
+	}
+
+	defaultPolicy := MetricsPolicy{
+		StreamEnabled:        false,
+		BatchFlushInterval:   3 * time.Minute,
+		BatchSampleInterval:  10 * time.Second,
+		StreamSampleInterval: 3 * time.Second,
+		MaxBatchRecords:      2048,
+	}
+	p := defaultPolicy
+	p.StreamEnabled = readStructBool(resp, "stream_enabled", defaultPolicy.StreamEnabled)
+	p.BatchFlushInterval = readStructSecondsAsDuration(resp, "batch_flush_interval_seconds", defaultPolicy.BatchFlushInterval)
+	p.BatchSampleInterval = readStructSecondsAsDuration(resp, "batch_sample_interval_seconds", defaultPolicy.BatchSampleInterval)
+	p.StreamSampleInterval = readStructSecondsAsDuration(resp, "stream_sample_interval_seconds", defaultPolicy.StreamSampleInterval)
+	p.MaxBatchRecords = int(readStructNumber(resp, "max_batch_records", float64(defaultPolicy.MaxBatchRecords)))
+	if p.MaxBatchRecords <= 0 {
+		p.MaxBatchRecords = defaultPolicy.MaxBatchRecords
+	}
+	return p, nil
+}
+
+func (c *HeartbeatClient) ReportMetrics(
+	ctx context.Context,
+	agentID string,
+	mode string,
+	records []model.AgentBasicMetricRecord,
+) error {
+	if c == nil || c.conn == nil {
+		return fmt.Errorf("heartbeat client is nil")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	list := make([]any, 0, len(records))
+	for _, record := range records {
+		list = append(list, map[string]any{
+			"ts_ms":               record.TimestampUnixMillis,
+			"cpu_usage_percent":   record.CPUUsagePercent,
+			"memory_used_percent": record.MemoryUsedPercent,
+			"disk_read_bps":       record.DiskReadBps,
+			"disk_write_bps":      record.DiskWriteBps,
+			"network_rx_bps":      record.NetworkRxBps,
+			"network_tx_bps":      record.NetworkTxBps,
+			"uptime_seconds":      record.UptimeSeconds,
+		})
+	}
+
+	req, err := structpb.NewStruct(map[string]any{
+		"agent_id": strings.TrimSpace(agentID),
+		"mode":     strings.TrimSpace(strings.ToLower(mode)),
+		"records":  list,
+	})
+	if err != nil {
+		return err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, defaultInvokeTimeout)
+	defer cancel()
+	resp := &structpb.Struct{}
+	if err := c.conn.Invoke(callCtx, runtimeReportAgentMetricsPath, req, resp); err != nil {
+		return err
+	}
+	return nil
+}
+
+func readStructBool(req *structpb.Struct, key string, fallback bool) bool {
+	if req == nil {
+		return fallback
+	}
+	field, ok := req.GetFields()[key]
+	if !ok || field == nil {
+		return fallback
+	}
+	switch v := field.GetKind().(type) {
+	case *structpb.Value_BoolValue:
+		return v.BoolValue
+	case *structpb.Value_NumberValue:
+		return v.NumberValue > 0
+	case *structpb.Value_StringValue:
+		switch strings.ToLower(strings.TrimSpace(v.StringValue)) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		default:
+			return fallback
+		}
+	default:
+		return fallback
+	}
+}
+
+func readStructNumber(req *structpb.Struct, key string, fallback float64) float64 {
+	if req == nil {
+		return fallback
+	}
+	field, ok := req.GetFields()[key]
+	if !ok || field == nil {
+		return fallback
+	}
+	n := field.GetNumberValue()
+	if n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func readStructSecondsAsDuration(req *structpb.Struct, key string, fallback time.Duration) time.Duration {
+	v := readStructNumber(req, key, 0)
+	if v <= 0 {
+		return fallback
+	}
+	return time.Duration(v) * time.Second
+}
+
+func normalizeAdminRPCTarget(endpoint string) (target string, serverName string, err error) {
+	raw := strings.TrimSpace(endpoint)
+	if raw == "" {
+		return "", "", fmt.Errorf("admin grpc endpoint is empty")
+	}
+
+	if strings.Contains(raw, "://") {
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("invalid admin grpc endpoint %q", endpoint)
+		}
+		scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+		switch scheme {
+		case "https", "grpcs", "tls":
+		default:
+			return "", "", fmt.Errorf("admin grpc endpoint must use tls")
+		}
+
+		host := strings.TrimSpace(parsed.Hostname())
+		if host == "" {
+			return "", "", fmt.Errorf("cannot resolve admin server name from endpoint %q", endpoint)
+		}
+		port := strings.TrimSpace(parsed.Port())
+		if port == "" {
+			port = "443"
+		}
+		return net.JoinHostPort(host, port), host, nil
+	}
+
+	host, port, splitErr := net.SplitHostPort(raw)
+	if splitErr != nil {
+		host = strings.Trim(raw, "[]")
+		port = "443"
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return "", "", fmt.Errorf("cannot resolve admin server name from endpoint %q", endpoint)
+	}
+	if strings.TrimSpace(port) == "" {
+		port = "443"
+	}
+	return net.JoinHostPort(host, port), host, nil
+}

@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package aurora.metrics.v1;
+
+option go_package = "aurora-vm-service/proto/metricsv1";
+
+// ===== REQUEST =====
+
+message SubscribeNodeCpuRequest {
+  string node_id = 1;
+}
+
+// ===== CPU FRAME =====
+
+message NodeCpuMetrics {
+  string node_id = 1;
+  int64 timestamp_unix = 2;
+
+  // total
+  double cpu_usage_percent = 3;
+  double cpu_user_percent = 4;
+  double cpu_system_percent = 5;
+  double cpu_idle_percent = 6;
+  double cpu_iowait_percent = 7;
+  double cpu_steal_percent = 8;
+
+  double load_1 = 9;
+  double load_5 = 10;
+  double load_15 = 11;
+
+  // per core
+  repeated double cpu_core_usage_percent = 13;
+
+  // frequency
+  uint64 cpu_freq_current_mhz = 14;
+  uint64 cpu_freq_min_mhz = 15;
+  uint64 cpu_freq_max_mhz = 16;
+
+  // scheduler
+  uint64 run_queue_length = 17;
+  double context_switches_per_sec = 18;
+  double interrupts_per_sec = 19;
+
+  // temp
+  double cpu_temperature_celsius = 20;
+}
+
+message NodeCpuMetricsFrame {
+  NodeCpuMetrics metrics = 1;
+}
+
+// ===== SERVICE =====
+
+service NodeCpuMetricsService {
+  rpc SubscribeNodeCpu(SubscribeNodeCpuRequest)
+      returns (stream NodeCpuMetricsFrame);
+}

@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package aurora.metrics.v1;
+
+option go_package = "aurora-vm-service/proto/metricsv1";
+
+// ===== REQUEST =====
+
+message SubscribeNodeNetIfRequest {
+  string node_id = 1;
+  string interface_name = 2; // eth0, ens3, bond0...
+}
+
+// ===== METRIC =====
+
+message NodeNetIfMetricLite {
+  string node_id = 1;
+  string interface_name = 2;
+  int64 timestamp_unix = 3;
+
+  // throughput
+  double rx_mb_s = 4;
+  double tx_mb_s = 5;
+  double total_mb_s = 6;
+
+  // packets
+  double rx_packets_per_sec = 7;
+  double tx_packets_per_sec = 8;
+
+  // errors
+  uint64 rx_errors = 9;
+  uint64 tx_errors = 10;
+  uint64 rx_dropped = 11;
+  uint64 tx_dropped = 12;
+
+  // util
+  double bandwidth_util_percent = 13;
+
+  // meta
+  uint64 speed_mbps = 14;
+  bool link_up = 15;
+}
+
+message NodeNetIfMetricFrame {
+  NodeNetIfMetricLite metrics = 1;
+}
+
+// ===== SERVICE =====
+
+service NodeNetworkMetricsService {
+  rpc SubscribeInterface(SubscribeNodeNetIfRequest)
+      returns (stream NodeNetIfMetricFrame);
+}

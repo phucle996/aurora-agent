@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package aurora.metrics.v1;
+
+option go_package = "aurora-vm-service/proto/metricsv1";
+
+message SubscribeNodeRamRequest {
+  string node_id = 1;
+}
+
+message NodeRamMetrics {
+  string node_id = 1;
+  int64 timestamp_unix = 2;
+
+  // ===== BASIC =====
+  uint64 ram_total_bytes = 3;
+  uint64 ram_used_bytes = 4;
+  uint64 ram_free_bytes = 5;
+  uint64 ram_available_bytes = 6;
+
+  double ram_usage_percent = 7;
+  double ram_available_percent = 8;
+
+  // ===== CACHE =====
+  uint64 ram_cached_bytes = 9;
+  uint64 ram_buffer_bytes = 10;
+  uint64 ram_shared_bytes = 11;
+  uint64 ram_slab_bytes = 12;
+
+  uint64 ram_active_bytes = 13;
+  uint64 ram_inactive_bytes = 14;
+
+  // ===== SWAP =====
+  uint64 swap_total_bytes = 15;
+  uint64 swap_used_bytes = 16;
+  uint64 swap_free_bytes = 17;
+  double swap_usage_percent = 18;
+
+  double swap_in_bytes_per_sec = 19;
+  double swap_out_bytes_per_sec = 20;
+
+  // ===== PRESSURE =====
+  double memory_pressure_percent = 21;
+  double page_faults_per_sec = 22;
+  double major_page_faults_per_sec = 23;
+
+  uint64 oom_kill_count = 24;
+
+  // ===== HUGE PAGES =====
+  uint64 hugepages_total = 25;
+  uint64 hugepages_used = 26;
+  uint64 hugepages_free = 27;
+}
+
+message NodeRamMetricsFrame {
+  NodeRamMetrics metrics = 1;
+}
+
+service NodeRamMetricsService {
+  rpc SubscribeNodeRam(SubscribeNodeRamRequest)
+      returns (stream NodeRamMetricsFrame);
+}
