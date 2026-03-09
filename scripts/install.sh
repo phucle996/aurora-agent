@@ -2,8 +2,6 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="install.sh"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GITHUB_REPO="phucle996/aurora-agent"
 
 APP_NAME="${AURORA_AGENT_BIN_NAME:-aurora-agent}"
@@ -231,10 +229,89 @@ ensure_node_id() {
   fi
   if [ -z "$node_id" ]; then
     node_id="$(generate_node_id)"
-    log "generated node_id=${node_id}"
+    printf '[%s] generated node_id=%s\n' "$SCRIPT_NAME" "$node_id" >&2
   fi
   set_env_kv "$ENV_FILE" "AURORA_NODE_ID" "$node_id"
   printf '%s' "$node_id"
+}
+
+endpoint_host() {
+  local endpoint="$1"
+  local value
+  value="$(printf '%s' "$endpoint" | xargs || true)"
+  if [ -z "$value" ]; then
+    printf ''
+    return
+  fi
+
+  if [ "${value#*://}" != "$value" ]; then
+    local after_scheme="${value#*://}"
+    local hostport="${after_scheme%%/*}"
+    hostport="${hostport%%\?*}"
+    hostport="${hostport%%#*}"
+    hostport="${hostport#*@}"
+    if [ "${hostport#\[}" != "$hostport" ]; then
+      hostport="${hostport#\[}"
+      hostport="${hostport%%\]*}"
+      printf '%s' "$hostport"
+      return
+    fi
+    printf '%s' "${hostport%%:*}"
+    return
+  fi
+
+  local hostport="$value"
+  hostport="${hostport#*@}"
+  if [ "${hostport#\[}" != "$hostport" ]; then
+    hostport="${hostport#\[}"
+    hostport="${hostport%%\]*}"
+    printf '%s' "$hostport"
+    return
+  fi
+  printf '%s' "${hostport%%:*}"
+}
+
+preflight_runtime_prerequisites() {
+  local admin_grpc_addr admin_host admin_ca admin_cert admin_key bootstrap_token
+  admin_grpc_addr="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_GRPC_ADDR")"
+  admin_ca="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CA_PATH")"
+  admin_cert="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CERT_PATH")"
+  admin_key="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_KEY_PATH")"
+  bootstrap_token="$(read_env_kv "$ENV_FILE" "AURORA_AGENT_BOOTSTRAP_TOKEN")"
+
+  [ -n "$admin_grpc_addr" ] || {
+    echo "AURORA_ADMIN_GRPC_ADDR is required" >&2
+    exit 1
+  }
+
+  [ -n "$admin_ca" ] || {
+    echo "AURORA_ADMIN_TLS_CA_PATH is required" >&2
+    exit 1
+  }
+  run_root test -s "$admin_ca" || {
+    echo "admin CA file not found/readable: ${admin_ca}" >&2
+    exit 1
+  }
+
+  admin_host="$(endpoint_host "$admin_grpc_addr")"
+  if [ -n "$admin_host" ] && command -v getent >/dev/null 2>&1; then
+    if ! getent hosts "$admin_host" >/dev/null 2>&1; then
+      warn "admin host cannot be resolved now: ${admin_host}"
+    fi
+  fi
+
+  if [ -n "$admin_cert" ] && [ -n "$admin_key" ] && run_root test -s "$admin_cert" && run_root test -s "$admin_key"; then
+    log "mTLS mode: using existing client cert/key"
+    return
+  fi
+
+  if [ -n "$bootstrap_token" ]; then
+    log "bootstrap mode: cert/key missing, will request cert via bootstrap token"
+    return
+  fi
+
+  echo "missing agent client cert/key and bootstrap token; provide --bootstrap-token or pre-provision cert/key paths" >&2
+  exit 1
 }
 
 apply_runtime_config() {
@@ -504,6 +581,7 @@ main() {
   agent_version="$(ensure_agent_version "$release_tag")"
   log "runtime agent_version=${agent_version}"
   apply_runtime_config
+  preflight_runtime_prerequisites
   install_systemd_unit "$release_tag"
 
   if command -v systemctl >/dev/null 2>&1; then
@@ -514,6 +592,7 @@ main() {
     else
       warn "service is not active: ${SERVICE_NAME}"
       run_root systemctl status "$SERVICE_NAME" --no-pager || true
+      run_root journalctl -u "$SERVICE_NAME" -n 80 --no-pager || true
       exit 1
     fi
   else
