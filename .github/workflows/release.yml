@@ -8,6 +8,7 @@ on:
     paths-ignore:
       - ".github/workflows/release.yml"
       - "*.md"
+      - "scripts/*"
   workflow_dispatch:
 
 permissions:
