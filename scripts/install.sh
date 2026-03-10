@@ -394,7 +394,7 @@ apply_runtime_config() {
   fi
 
   local admin_tls_ca
-  admin_tls_ca="$(printf '%s' "${CLI_ADMIN_TLS_CA_PATH:-${AURORA_ADMIN_TLS_CA_PATH:-/etc/aurora/certs/ca.crt}}" | xargs || true)"
+  admin_tls_ca="$(printf '%s' "${CLI_ADMIN_TLS_CA_PATH:-${AURORA_ADMIN_TLS_CA_PATH:-/etc/aurora/certs/agent-ca.crt}}" | xargs || true)"
   local admin_tls_cert
   admin_tls_cert="$(printf '%s' "${CLI_ADMIN_TLS_CERT_PATH:-${AURORA_ADMIN_TLS_CERT_PATH:-/etc/aurora/certs/agent.crt}}" | xargs || true)"
   local admin_tls_key
@@ -556,7 +556,7 @@ AURORA_AGENT_IP=
 AURORA_AGENT_BOOTSTRAP_TOKEN=
 AURORA_ADMIN_GRPC_ADDR=
 AURORA_ADMIN_SERVER_NAME=
-AURORA_ADMIN_TLS_CA_PATH=/etc/aurora/certs/ca.crt
+AURORA_ADMIN_TLS_CA_PATH=/etc/aurora/certs/agent-ca.crt
 AURORA_ADMIN_TLS_CERT_PATH=/etc/aurora/certs/agent.crt
 AURORA_ADMIN_TLS_KEY_PATH=/etc/aurora/certs/agent.key
 AURORA_AGENT_HEARTBEAT_INTERVAL=15s
