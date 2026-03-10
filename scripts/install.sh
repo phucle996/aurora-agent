@@ -20,6 +20,7 @@ CLI_ADMIN_TLS_CERT_PATH=""
 CLI_ADMIN_TLS_KEY_PATH=""
 CLI_HEARTBEAT_INTERVAL=""
 CLI_BOOTSTRAP_TOKEN=""
+CLI_BOOTSTRAP_TOKEN_PROMPT="false"
 CLI_CLUSTER_ID=""
 CLI_AGENT_IP=""
 CLI_AGENT_GRPC_ENDPOINT=""
@@ -129,12 +130,13 @@ parse_args() {
         shift 2
         ;;
       --bootstrap-token)
-        if [ "$#" -lt 2 ]; then
-          echo "missing value for --bootstrap-token" >&2
-          exit 1
+        if [ "$#" -ge 2 ] && [ "${2#-}" = "$2" ]; then
+          CLI_BOOTSTRAP_TOKEN="$(printf '%s' "$2" | xargs)"
+          shift 2
+        else
+          CLI_BOOTSTRAP_TOKEN_PROMPT="true"
+          shift 1
         fi
-        CLI_BOOTSTRAP_TOKEN="$(printf '%s' "$2" | xargs)"
-        shift 2
         ;;
       --cluster-id)
         if [ "$#" -lt 2 ]; then
@@ -162,7 +164,7 @@ parse_args() {
         ;;
       --help|-h)
         cat <<'EOF'
-Usage: install.sh [--admin-grpc-endpoint host:port|https://host[:port]] [--admin-server-name host] [--admin-client-cn cn] [--admin-tls-ca-path path] [--admin-tls-cert-path path] [--admin-tls-key-path path] [--heartbeat-interval 15s] [--bootstrap-token token] [--cluster-id id] [--agent-ip ip] [--agent-grpc-endpoint host:port]
+Usage: install.sh [--admin-grpc-endpoint host:port|https://host[:port]] [--admin-server-name host] [--admin-client-cn cn] [--admin-tls-ca-path path] [--admin-tls-cert-path path] [--admin-tls-key-path path] [--heartbeat-interval 15s] [--bootstrap-token [token]] [--cluster-id id] [--agent-ip ip] [--agent-grpc-endpoint host:port]
 EOF
         exit 0
         ;;
@@ -172,6 +174,28 @@ EOF
         ;;
     esac
   done
+}
+
+prompt_bootstrap_token_if_needed() {
+  if [ "$CLI_BOOTSTRAP_TOKEN_PROMPT" != "true" ]; then
+    return
+  fi
+  if [ -n "$(printf '%s' "$CLI_BOOTSTRAP_TOKEN" | xargs || true)" ]; then
+    return
+  fi
+  if [ ! -t 0 ]; then
+    echo "interactive bootstrap token prompt requires TTY; provide --bootstrap-token <token>" >&2
+    exit 1
+  fi
+
+  printf '[%s] Enter bootstrap token: ' "$SCRIPT_NAME" >&2
+  IFS= read -r -s CLI_BOOTSTRAP_TOKEN
+  printf '\n' >&2
+  CLI_BOOTSTRAP_TOKEN="$(printf '%s' "$CLI_BOOTSTRAP_TOKEN" | xargs || true)"
+  if [ -z "$CLI_BOOTSTRAP_TOKEN" ]; then
+    echo "bootstrap token is empty" >&2
+    exit 1
+  fi
 }
 
 set_env_kv() {
@@ -524,6 +548,7 @@ ensure_agent_version() {
 
 main() {
   parse_args "$@"
+  prompt_bootstrap_token_if_needed
   require_cmd tar
   # Validate sudo/root availability early so installer fails fast with clear error.
   run_root true
