@@ -9,9 +9,9 @@ Aurora Agent đọc config từ environment variables.
 | `AURORA_NODE_ID` | Agent identity |
 | `AURORA_ADMIN_GRPC_ADDR` | Admin gRPC endpoint (`host:port` hoặc `https://host[:port]`) |
 | `AURORA_ADMIN_TLS_CA_PATH` | CA PEM path để verify Admin |
-| `AURORA_ADMIN_TLS_CERT_PATH` | Client cert PEM path (required nếu không bootstrap token) |
-| `AURORA_ADMIN_TLS_KEY_PATH` | Client key PEM path (required nếu không bootstrap token) |
-| `AURORA_AGENT_BOOTSTRAP_TOKEN` | Bootstrap token (required nếu chưa có client cert/key) |
+| `AURORA_ADMIN_TLS_CERT_PATH` | Client cert PEM path (đường dẫn sẽ được agent ghi cert mới sau bootstrap) |
+| `AURORA_ADMIN_TLS_KEY_PATH` | Client key PEM path (đường dẫn sẽ được agent ghi key mới sau bootstrap) |
+| `AURORA_AGENT_BOOTSTRAP_TOKEN` | Bootstrap token (required khi install để xin cert mới và ghi đè cert cũ) |
 
 ## Heartbeat / Runtime
 

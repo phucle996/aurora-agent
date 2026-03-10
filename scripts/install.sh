@@ -359,18 +359,33 @@ preflight_runtime_prerequisites() {
     fi
   fi
 
-  if [ -n "$admin_cert" ] && [ -n "$admin_key" ] && run_root test -s "$admin_cert" && run_root test -s "$admin_key"; then
-    log "mTLS mode: using existing client cert/key"
-    return
-  fi
+  [ -n "$admin_cert" ] || {
+    echo "AURORA_ADMIN_TLS_CERT_PATH is required" >&2
+    exit 1
+  }
+  [ -n "$admin_key" ] || {
+    echo "AURORA_ADMIN_TLS_KEY_PATH is required" >&2
+    exit 1
+  }
+  [ -n "$bootstrap_token" ] || {
+    echo "AURORA_AGENT_BOOTSTRAP_TOKEN is required for install-time cert bootstrap" >&2
+    exit 1
+  }
+  log "bootstrap mode: force requesting latest cert/key from admin using bootstrap token"
+}
 
-  if [ -n "$bootstrap_token" ]; then
-    log "bootstrap mode: cert/key missing, will request cert via bootstrap token"
-    return
-  fi
+force_bootstrap_cert_rotation() {
+  local admin_cert admin_key
+  admin_cert="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CERT_PATH")"
+  admin_key="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_KEY_PATH")"
 
-  echo "missing agent client cert/key and bootstrap token; provide --bootstrap-token or pre-provision cert/key paths" >&2
-  exit 1
+  [ -n "$admin_cert" ] || return
+  [ -n "$admin_key" ] || return
+
+  if run_root test -e "$admin_cert" || run_root test -e "$admin_key"; then
+    log "remove existing mTLS cert/key to force fresh bootstrap cert issuance"
+    run_root rm -f "$admin_cert" "$admin_key"
+  fi
 }
 
 apply_runtime_config() {
@@ -642,6 +657,7 @@ main() {
   log "runtime agent_version=${agent_version}"
   apply_runtime_config
   preflight_runtime_prerequisites
+  force_bootstrap_cert_rotation
   install_systemd_unit "$release_tag"
 
   if command -v systemctl >/dev/null 2>&1; then

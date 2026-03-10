@@ -55,7 +55,7 @@ go run ./cmd/agent
 ```bash
 cd aurora-agent
 chmod +x scripts/install.sh
-./scripts/install.sh --admin-grpc-endpoint admin.aurora.local:443
+./scripts/install.sh --admin-grpc-endpoint admin.aurora.local:443 --bootstrap-token
 ```
 
 Script sẽ:
@@ -64,6 +64,8 @@ Script sẽ:
 - install vào `/usr/local/bin/aurora-agent`
 - copy unit file vào `/etc/systemd/system/aurora-agent.service`
 - tạo file env `/etc/aurora-agent.env` (nếu chưa có)
+- luôn dùng bootstrap token để xin cert mới nhất từ Admin
+- luôn xóa cert/key cũ trước khi start để buộc rotate cert
 - `systemctl enable --now aurora-agent.service`
 
 ## Runtime Flow
@@ -95,7 +97,7 @@ Chi tiết đầy đủ xem `CONFIGURATION.md`.
 - `AURORA_ADMIN_TLS_CA_PATH`
 - `AURORA_ADMIN_TLS_CERT_PATH`
 - `AURORA_ADMIN_TLS_KEY_PATH`
-- `AURORA_AGENT_BOOTSTRAP_TOKEN` (dùng khi chưa có cert/key)
+- `AURORA_AGENT_BOOTSTRAP_TOKEN` (bắt buộc lúc install để rotate cert mới)
 - `AURORA_AGENT_CLUSTER_ID`
 - `AURORA_AGENT_IP`
 - `AURORA_AGENT_HEARTBEAT_INTERVAL`
