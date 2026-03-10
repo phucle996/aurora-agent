@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"aurora-agent/internal/agent"
 	"aurora-agent/internal/config"
@@ -18,10 +19,11 @@ func main() {
 	a, err := agent.New(cfg, logger)
 	if err != nil {
 		logger.Error("agent initialization failed", "error", err)
-		return
+		os.Exit(1)
 	}
 
 	if err := a.Run(context.Background()); err != nil {
 		logger.Error("agent runtime failed", "error", err)
+		os.Exit(1)
 	}
 }
