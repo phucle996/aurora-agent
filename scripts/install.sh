@@ -295,6 +295,37 @@ endpoint_host() {
   printf '%s' "${hostport%%:*}"
 }
 
+endpoint_has_explicit_port() {
+  local endpoint="$1"
+  local value hostport
+  value="$(printf '%s' "$endpoint" | xargs || true)"
+  if [ -z "$value" ]; then
+    return 1
+  fi
+
+  if [ "${value#*://}" != "$value" ]; then
+    hostport="${value#*://}"
+    hostport="${hostport%%/*}"
+    hostport="${hostport%%\?*}"
+    hostport="${hostport%%#*}"
+    hostport="${hostport#*@}"
+  else
+    hostport="${value#*@}"
+  fi
+
+  if [ "${hostport#\[}" != "$hostport" ]; then
+    case "$hostport" in
+      *"]:"*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  case "$hostport" in
+    *:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 preflight_runtime_prerequisites() {
   local admin_grpc_addr admin_host admin_ca admin_cert admin_key bootstrap_token
   admin_grpc_addr="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_GRPC_ADDR")"
@@ -305,6 +336,10 @@ preflight_runtime_prerequisites() {
 
   [ -n "$admin_grpc_addr" ] || {
     echo "AURORA_ADMIN_GRPC_ADDR is required" >&2
+    exit 1
+  }
+  endpoint_has_explicit_port "$admin_grpc_addr" || {
+    echo "AURORA_ADMIN_GRPC_ADDR must include explicit gRPC port (direct endpoint), got: ${admin_grpc_addr}" >&2
     exit 1
   }
 

@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	gogrpc "google.golang.org/grpc"
@@ -42,8 +43,15 @@ type HeartbeatPayload struct {
 }
 
 type HeartbeatClient struct {
-	logger *slog.Logger
+	logger             *slog.Logger
+	cfg                config.Config
+	target             string
+	inferredServerName string
+
+	connMu sync.RWMutex
 	conn   *gogrpc.ClientConn
+
+	reconnectMu sync.Mutex
 }
 
 type MetricsPolicy struct {
@@ -60,26 +68,20 @@ func NewHeartbeatClient(cfg config.Config, logger *slog.Logger) (*HeartbeatClien
 		return nil, err
 	}
 
-	if err := ensureAgentClientCertificate(cfg, target, inferredServerName, logger); err != nil {
+	if err := ensureAgentClientCertificate(cfg, target, inferredServerName, logger, false); err != nil {
 		return nil, err
 	}
 
-	tlsCfg, err := cfg.AdminTLSConfig()
-	if err != nil {
+	client := &HeartbeatClient{
+		logger:             logger,
+		cfg:                cfg,
+		target:             target,
+		inferredServerName: inferredServerName,
+	}
+	if err := client.reconnect(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(tlsCfg.ServerName) == "" {
-		tlsCfg.ServerName = inferredServerName
-	}
-
-	conn, err := gogrpc.NewClient(target, gogrpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
-	if err != nil {
-		return nil, fmt.Errorf("dial admin rpc failed: %w", err)
-	}
-	return &HeartbeatClient{
-		logger: logger,
-		conn:   conn,
-	}, nil
+	return client, nil
 }
 
 func ensureAgentClientCertificate(
@@ -87,8 +89,9 @@ func ensureAgentClientCertificate(
 	target string,
 	inferredServerName string,
 	logger *slog.Logger,
+	force bool,
 ) error {
-	if certAndKeyExists(cfg.AdminTLSCertPath, cfg.AdminTLSKeyPath) {
+	if !force && certAndKeyExists(cfg.AdminTLSCertPath, cfg.AdminTLSKeyPath) {
 		return nil
 	}
 	if strings.TrimSpace(cfg.BootstrapToken) == "" {
@@ -147,7 +150,11 @@ func ensureAgentClientCertificate(
 		return fmt.Errorf("write admin ca cert failed: %w", err)
 	}
 	if logger != nil {
-		logger.Info("agent bootstrap certificate completed")
+		if force {
+			logger.Info("agent bootstrap certificate rotated")
+		} else {
+			logger.Info("agent bootstrap certificate completed")
+		}
 	}
 	return nil
 }
@@ -270,10 +277,17 @@ func uniqueStrings(items []string) []string {
 }
 
 func (c *HeartbeatClient) Close() error {
-	if c == nil || c.conn == nil {
+	if c == nil {
 		return nil
 	}
-	return c.conn.Close()
+	c.connMu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.connMu.Unlock()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
 }
 
 func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload HeartbeatPayload) error {
@@ -301,7 +315,7 @@ func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload Heartbeat
 	}
 
 	resp := &structpb.Struct{}
-	if err := c.conn.Invoke(callCtx, runtimeReportAgentHeartbeatPath, req, resp); err != nil {
+	if err := c.invokeWithRecovery(callCtx, runtimeReportAgentHeartbeatPath, req, resp); err != nil {
 		return fmt.Errorf("report heartbeat failed: %w", err)
 	}
 	if c.logger != nil {
@@ -323,7 +337,7 @@ func (c *HeartbeatClient) GetMetricsPolicy(ctx context.Context, agentID string) 
 		return MetricsPolicy{}, err
 	}
 	resp := &structpb.Struct{}
-	if err := c.conn.Invoke(callCtx, runtimeGetAgentMetricsPolicyPath, req, resp); err != nil {
+	if err := c.invokeWithRecovery(callCtx, runtimeGetAgentMetricsPolicyPath, req, resp); err != nil {
 		return MetricsPolicy{}, err
 	}
 
@@ -407,10 +421,168 @@ func (c *HeartbeatClient) ReportMetrics(
 	callCtx, cancel := context.WithTimeout(ctx, defaultInvokeTimeout)
 	defer cancel()
 	resp := &structpb.Struct{}
-	if err := c.conn.Invoke(callCtx, runtimeReportAgentMetricsPath, req, resp); err != nil {
+	if err := c.invokeWithRecovery(callCtx, runtimeReportAgentMetricsPath, req, resp); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (c *HeartbeatClient) invokeWithRecovery(
+	ctx context.Context,
+	method string,
+	req *structpb.Struct,
+	resp *structpb.Struct,
+) error {
+	if c == nil {
+		return fmt.Errorf("heartbeat client is nil")
+	}
+	conn := c.currentConn()
+	if conn == nil {
+		if err := c.reconnect(); err != nil {
+			return classifyAdminRPCError(err, c.cfg.AdminTLSCAPath)
+		}
+		conn = c.currentConn()
+		if conn == nil {
+			return fmt.Errorf("admin rpc connection is unavailable")
+		}
+	}
+
+	err := conn.Invoke(ctx, method, req, resp)
+	if err == nil {
+		return nil
+	}
+
+	classified := classifyAdminRPCError(err, c.cfg.AdminTLSCAPath)
+	if !isRecoverableAdminRPCError(err) {
+		return classified
+	}
+
+	if reconnectErr := c.reconnect(); reconnectErr != nil {
+		return fmt.Errorf("%w; reconnect failed: %v", classified, classifyAdminRPCError(reconnectErr, c.cfg.AdminTLSCAPath))
+	}
+	retryConn := c.currentConn()
+	if retryConn == nil {
+		return fmt.Errorf("%w; reconnect failed: connection unavailable", classified)
+	}
+	retryErr := retryConn.Invoke(ctx, method, req, resp)
+	if retryErr == nil {
+		return nil
+	}
+	retryClassified := classifyAdminRPCError(retryErr, c.cfg.AdminTLSCAPath)
+
+	if shouldTryBootstrapRotation(retryErr, c.cfg.BootstrapToken) {
+		if c.logger != nil {
+			c.logger.Warn("admin rpc failed; trying agent cert rotation via bootstrap token")
+		}
+		if rotateErr := ensureAgentClientCertificate(c.cfg, c.target, c.inferredServerName, c.logger, true); rotateErr == nil {
+			if reconnectErr := c.reconnect(); reconnectErr == nil {
+				lastConn := c.currentConn()
+				if lastConn != nil {
+					lastErr := lastConn.Invoke(ctx, method, req, resp)
+					if lastErr == nil {
+						return nil
+					}
+					return classifyAdminRPCError(lastErr, c.cfg.AdminTLSCAPath)
+				}
+			}
+		} else if c.logger != nil {
+			c.logger.Warn("agent cert rotation via bootstrap token failed", "error", rotateErr)
+		}
+	}
+
+	return retryClassified
+}
+
+func (c *HeartbeatClient) reconnect() error {
+	if c == nil {
+		return fmt.Errorf("heartbeat client is nil")
+	}
+
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+
+	tlsCfg, err := c.cfg.AdminTLSConfig()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(tlsCfg.ServerName) == "" {
+		tlsCfg.ServerName = c.inferredServerName
+	}
+
+	conn, err := gogrpc.NewClient(c.target, gogrpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	if err != nil {
+		return fmt.Errorf("dial admin rpc failed: %w", err)
+	}
+
+	c.connMu.Lock()
+	old := c.conn
+	c.conn = conn
+	c.connMu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
+func (c *HeartbeatClient) currentConn() *gogrpc.ClientConn {
+	if c == nil {
+		return nil
+	}
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn
+}
+
+func shouldTryBootstrapRotation(err error, bootstrapToken string) bool {
+	if strings.TrimSpace(bootstrapToken) == "" || err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "certificate signed by unknown authority") {
+		return false
+	}
+	if strings.Contains(msg, "authentication handshake failed") {
+		return true
+	}
+	if strings.Contains(msg, "certificate required") ||
+		strings.Contains(msg, "bad certificate") ||
+		strings.Contains(msg, "certificate revoked") ||
+		strings.Contains(msg, "certificate has expired") ||
+		strings.Contains(msg, "permission denied") {
+		return true
+	}
+	return false
+}
+
+func isRecoverableAdminRPCError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection error") ||
+		strings.Contains(msg, "transport is closing") ||
+		strings.Contains(msg, "authentication handshake failed") ||
+		strings.Contains(msg, "code = unavailable")
+}
+
+func classifyAdminRPCError(err error, caPath string) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unexpected http status code received from server: 404") ||
+		strings.Contains(msg, "unexpected content-type \"application/json") {
+		return fmt.Errorf("admin grpc endpoint is not the direct gRPC port (likely nginx/http endpoint): %w", err)
+	}
+	if strings.Contains(msg, "certificate signed by unknown authority") {
+		return fmt.Errorf(
+			"admin tls verification failed (ca mismatch at %s); update agent CA file to current Aurora Admin CA and retry: %w",
+			strings.TrimSpace(caPath),
+			err,
+		)
+	}
+	return err
 }
 
 func readStructBool(req *structpb.Struct, key string, fallback bool) bool {
@@ -487,22 +659,21 @@ func normalizeAdminRPCTarget(endpoint string) (target string, serverName string,
 		}
 		port := strings.TrimSpace(parsed.Port())
 		if port == "" {
-			port = "443"
+			return "", "", fmt.Errorf("admin grpc endpoint must include explicit port (direct gRPC), got %q", endpoint)
 		}
 		return net.JoinHostPort(host, port), host, nil
 	}
 
 	host, port, splitErr := net.SplitHostPort(raw)
 	if splitErr != nil {
-		host = strings.Trim(raw, "[]")
-		port = "443"
+		return "", "", fmt.Errorf("admin grpc endpoint must include explicit port (direct gRPC), got %q", endpoint)
 	}
 	host = strings.Trim(strings.TrimSpace(host), "[]")
 	if host == "" {
 		return "", "", fmt.Errorf("cannot resolve admin server name from endpoint %q", endpoint)
 	}
 	if strings.TrimSpace(port) == "" {
-		port = "443"
+		return "", "", fmt.Errorf("admin grpc endpoint port is empty in %q", endpoint)
 	}
 	return net.JoinHostPort(host, port), host, nil
 }
