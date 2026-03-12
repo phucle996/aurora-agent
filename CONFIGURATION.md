@@ -8,7 +8,8 @@ Aurora Agent đọc config từ environment variables.
 |---|---|
 | `AURORA_NODE_ID` | Agent identity |
 | `AURORA_ADMIN_GRPC_ADDR` | Admin gRPC endpoint (`host:port` hoặc `https://host[:port]`) |
-| `AURORA_ADMIN_TLS_CA_PATH` | CA PEM path để verify Admin |
+| `AURORA_ADMIN_SERVER_CA_PATH` | CA PEM path để verify **Admin server cert** (thường là `/etc/aurora/certs/ca.crt`) |
+| `AURORA_ADMIN_CLIENT_CA_PATH` | CA PEM path để verify **Admin client cert** khi Admin gọi ngược agent probe (thường là `/etc/aurora/certs/agent-ca.crt`) |
 | `AURORA_ADMIN_TLS_CERT_PATH` | Client cert PEM path (đường dẫn sẽ được agent ghi cert mới sau bootstrap) |
 | `AURORA_ADMIN_TLS_KEY_PATH` | Client key PEM path (đường dẫn sẽ được agent ghi key mới sau bootstrap) |
 | `AURORA_AGENT_BOOTSTRAP_TOKEN` | Bootstrap token (required khi install để xin cert mới và ghi đè cert cũ) |
@@ -34,6 +35,7 @@ Aurora Agent đọc config từ environment variables.
 |---|---|
 | `AURORA_ADMIN_SERVER_NAME` | empty (auto infer từ endpoint host) |
 | `AURORA_AGENT_ADMIN_CLIENT_CN` | `AURORA_ADMIN_SERVER_NAME` hoặc `admin.aurora.local` |
+| `AURORA_ADMIN_TLS_CA_PATH` | legacy alias, fallback cho `AURORA_ADMIN_SERVER_CA_PATH` |
 | `AURORA_LOG_LEVEL` | `info` (`debug`, `warn`, `error`) |
 
 ## Example
@@ -47,7 +49,8 @@ AURORA_AGENT_GRPC_ENDPOINT=node-a1.aurora.local:7443
 
 AURORA_ADMIN_GRPC_ADDR=admin.aurora.local:443
 AURORA_ADMIN_SERVER_NAME=admin.aurora.local
-AURORA_ADMIN_TLS_CA_PATH=/etc/aurora/certs/ca.crt
+AURORA_ADMIN_SERVER_CA_PATH=/etc/aurora/certs/ca.crt
+AURORA_ADMIN_CLIENT_CA_PATH=/etc/aurora/certs/agent-ca.crt
 AURORA_ADMIN_TLS_CERT_PATH=/etc/aurora/certs/agent.crt
 AURORA_ADMIN_TLS_KEY_PATH=/etc/aurora/certs/agent.key
 AURORA_AGENT_HEARTBEAT_INTERVAL=15s

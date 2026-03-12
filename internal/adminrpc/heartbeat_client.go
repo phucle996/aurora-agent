@@ -157,7 +157,7 @@ func ensureAgentClientCertificate(
 	if err := writeSecureFile(cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write agent tls cert failed: %w", err)
 	}
-	if err := writeSecureFile(cfg.AdminTLSCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
+	if err := writeSecureFile(cfg.AdminServerCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write admin ca cert failed: %w", err)
 	}
 	if logger != nil {
@@ -171,9 +171,9 @@ func ensureAgentClientCertificate(
 }
 
 func buildBootstrapTLSConfig(cfg config.Config, inferredServerName string) (*tls.Config, error) {
-	caPath := strings.TrimSpace(cfg.AdminTLSCAPath)
+	caPath := strings.TrimSpace(cfg.AdminServerCAPath)
 	if caPath == "" {
-		return nil, fmt.Errorf("AURORA_ADMIN_TLS_CA_PATH is required")
+		return nil, fmt.Errorf("AURORA_ADMIN_SERVER_CA_PATH is required")
 	}
 	caBytes, err := os.ReadFile(caPath)
 	if err != nil {
@@ -473,7 +473,7 @@ func (c *HeartbeatClient) invokeWithRecovery(
 	conn := c.currentConn()
 	if conn == nil {
 		if err := c.reconnect(); err != nil {
-			return classifyAdminRPCError(err, c.cfg.AdminTLSCAPath)
+			return classifyAdminRPCError(err, c.cfg.AdminServerCAPath)
 		}
 		conn = c.currentConn()
 		if conn == nil {
@@ -486,13 +486,13 @@ func (c *HeartbeatClient) invokeWithRecovery(
 		return nil
 	}
 
-	classified := classifyAdminRPCError(err, c.cfg.AdminTLSCAPath)
+	classified := classifyAdminRPCError(err, c.cfg.AdminServerCAPath)
 	if !isRecoverableAdminRPCError(err) {
 		return classified
 	}
 
 	if reconnectErr := c.reconnect(); reconnectErr != nil {
-		return fmt.Errorf("%w; reconnect failed: %v", classified, classifyAdminRPCError(reconnectErr, c.cfg.AdminTLSCAPath))
+		return fmt.Errorf("%w; reconnect failed: %v", classified, classifyAdminRPCError(reconnectErr, c.cfg.AdminServerCAPath))
 	}
 	retryConn := c.currentConn()
 	if retryConn == nil {
@@ -502,7 +502,7 @@ func (c *HeartbeatClient) invokeWithRecovery(
 	if retryErr == nil {
 		return nil
 	}
-	retryClassified := classifyAdminRPCError(retryErr, c.cfg.AdminTLSCAPath)
+	retryClassified := classifyAdminRPCError(retryErr, c.cfg.AdminServerCAPath)
 
 	if shouldTryBootstrapRotation(retryErr, c.cfg.BootstrapToken) {
 		if c.logger != nil {
@@ -516,7 +516,7 @@ func (c *HeartbeatClient) invokeWithRecovery(
 					if lastErr == nil {
 						return nil
 					}
-					return classifyAdminRPCError(lastErr, c.cfg.AdminTLSCAPath)
+					return classifyAdminRPCError(lastErr, c.cfg.AdminServerCAPath)
 				}
 			}
 		} else if c.logger != nil {
@@ -649,7 +649,7 @@ func (c *HeartbeatClient) renewClientCertificate(ctx context.Context) error {
 	if err := writeSecureFile(c.cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write renewed tls cert failed: %w", err)
 	}
-	if err := writeSecureFile(c.cfg.AdminTLSCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
+	if err := writeSecureFile(c.cfg.AdminServerCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write renewed tls ca failed: %w", err)
 	}
 	if err := c.reconnect(); err != nil {

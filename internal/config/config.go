@@ -26,7 +26,8 @@ type Config struct {
 	AdminServerName   string
 	AdminClientCN     string
 	AdminClientRole   string
-	AdminTLSCAPath    string
+	AdminServerCAPath string
+	AdminClientCAPath string
 	AdminTLSCertPath  string
 	AdminTLSKeyPath   string
 	BootstrapToken    string
@@ -45,6 +46,7 @@ func Load() (Config, error) {
 		hostname = "unknown-host"
 	}
 
+	legacyCAPath := env("AURORA_ADMIN_TLS_CA_PATH", "")
 	cfg := Config{
 		NodeID:            env("AURORA_NODE_ID", hostname),
 		ServiceID:         env("AURORA_AGENT_SERVICE_ID", "aurora-agent"),
@@ -57,7 +59,8 @@ func Load() (Config, error) {
 		AdminServerName:   env("AURORA_ADMIN_SERVER_NAME", ""),
 		AdminClientCN:     env("AURORA_AGENT_ADMIN_CLIENT_CN", env("AURORA_ADMIN_SERVER_NAME", "admin.aurora.local")),
 		AdminClientRole:   env("AURORA_AGENT_ADMIN_CLIENT_ROLE", "control-plane"),
-		AdminTLSCAPath:    env("AURORA_ADMIN_TLS_CA_PATH", ""),
+		AdminServerCAPath: env("AURORA_ADMIN_SERVER_CA_PATH", legacyCAPath),
+		AdminClientCAPath: env("AURORA_ADMIN_CLIENT_CA_PATH", env("AURORA_ADMIN_SERVER_CA_PATH", legacyCAPath)),
 		AdminTLSCertPath:  env("AURORA_ADMIN_TLS_CERT_PATH", ""),
 		AdminTLSKeyPath:   env("AURORA_ADMIN_TLS_KEY_PATH", ""),
 		BootstrapToken:    env("AURORA_AGENT_BOOTSTRAP_TOKEN", ""),
@@ -99,8 +102,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.AdminGRPCAddr) == "" {
 		return errors.New("AURORA_ADMIN_GRPC_ADDR is required")
 	}
-	if strings.TrimSpace(c.AdminTLSCAPath) == "" {
-		return errors.New("AURORA_ADMIN_TLS_CA_PATH is required")
+	if strings.TrimSpace(c.AdminServerCAPath) == "" {
+		return errors.New("AURORA_ADMIN_SERVER_CA_PATH is required")
+	}
+	if strings.TrimSpace(c.AdminClientCAPath) == "" {
+		return errors.New("AURORA_ADMIN_CLIENT_CA_PATH is required")
 	}
 	if strings.TrimSpace(c.AdminTLSCertPath) == "" || strings.TrimSpace(c.AdminTLSKeyPath) == "" {
 		return errors.New("AURORA_ADMIN_TLS_CERT_PATH and AURORA_ADMIN_TLS_KEY_PATH are required")
@@ -117,9 +123,9 @@ func (c Config) Validate() error {
 }
 
 func (c Config) AdminTLSConfig() (*tls.Config, error) {
-	caBytes, err := os.ReadFile(strings.TrimSpace(c.AdminTLSCAPath))
+	caBytes, err := os.ReadFile(strings.TrimSpace(c.AdminServerCAPath))
 	if err != nil {
-		return nil, fmt.Errorf("read admin CA file: %w", err)
+		return nil, fmt.Errorf("read admin server CA file: %w", err)
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caBytes) {
@@ -141,9 +147,9 @@ func (c Config) AdminTLSConfig() (*tls.Config, error) {
 }
 
 func (c Config) ProbeServerTLSConfig() (*tls.Config, error) {
-	caBytes, err := os.ReadFile(strings.TrimSpace(c.AdminTLSCAPath))
+	caBytes, err := os.ReadFile(strings.TrimSpace(c.AdminClientCAPath))
 	if err != nil {
-		return nil, fmt.Errorf("read admin CA file: %w", err)
+		return nil, fmt.Errorf("read admin client CA file: %w", err)
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caBytes) {
