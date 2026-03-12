@@ -28,9 +28,11 @@ import (
 const (
 	runtimeReportAgentHeartbeatPath  = "/admin.transport.runtime.v1.RuntimeService/ReportAgentHeartbeat"
 	runtimeBootstrapAgentPath        = "/admin.transport.runtime.v1.RuntimeService/BootstrapAgent"
+	runtimeRenewAgentCertPath        = "/admin.transport.runtime.v1.RuntimeService/RenewAgentCertificate"
 	runtimeGetAgentMetricsPolicyPath = "/admin.transport.runtime.v1.RuntimeService/GetAgentMetricsPolicy"
 	runtimeReportAgentMetricsPath    = "/admin.transport.runtime.v1.RuntimeService/ReportAgentMetrics"
 	defaultInvokeTimeout             = 8 * time.Second
+	certRenewCheckInterval           = 1 * time.Minute
 )
 
 type HeartbeatPayload struct {
@@ -52,6 +54,9 @@ type HeartbeatClient struct {
 	conn   *gogrpc.ClientConn
 
 	reconnectMu sync.Mutex
+
+	certRenewMu     sync.Mutex
+	lastCertCheckAt time.Time
 }
 
 type MetricsPolicy struct {
@@ -98,7 +103,7 @@ func ensureAgentClientCertificate(
 		return fmt.Errorf("missing agent client cert/key and bootstrap token")
 	}
 
-	keyPEM, csrPEM, err := generateAgentKeyAndCSR(cfg)
+	generatedKeyPEM, csrPEM, err := generateAgentKeyAndCSR(cfg)
 	if err != nil {
 		return err
 	}
@@ -118,6 +123,8 @@ func ensureAgentClientCertificate(
 	req, err := structpb.NewStruct(map[string]any{
 		"node_id":             strings.TrimSpace(cfg.NodeID),
 		"cluster_id":          strings.TrimSpace(cfg.ClusterID),
+		"service_id":          strings.TrimSpace(cfg.ServiceID),
+		"role":                strings.TrimSpace(cfg.Role),
 		"hostname":            strings.TrimSpace(cfg.Hostname),
 		"ip":                  strings.TrimSpace(cfg.AgentIP),
 		"bootstrap_token":     strings.TrimSpace(cfg.BootstrapToken),
@@ -139,8 +146,12 @@ func ensureAgentClientCertificate(
 	if clientCertPEM == "" || caCertPEM == "" {
 		return fmt.Errorf("bootstrap rpc response missing certificates")
 	}
+	clientKeyPEM := strings.TrimSpace(string(generatedKeyPEM))
+	if clientKeyPEM == "" {
+		return fmt.Errorf("generated client key is empty")
+	}
 
-	if err := writeSecureFile(cfg.AdminTLSKeyPath, keyPEM, 0o600); err != nil {
+	if err := writeSecureFile(cfg.AdminTLSKeyPath, []byte(clientKeyPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write agent tls key failed: %w", err)
 	}
 	if err := writeSecureFile(cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
@@ -214,6 +225,7 @@ func generateAgentKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
 	if ip := net.ParseIP(strings.TrimSpace(cfg.AgentIP)); ip != nil {
 		ipAddresses = append(ipAddresses, ip)
 	}
+	uris := buildAgentIdentityURIs(cfg)
 
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
 		Subject: pkix.Name{
@@ -221,6 +233,7 @@ func generateAgentKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
 		},
 		DNSNames:    dnsNames,
 		IPAddresses: ipAddresses,
+		URIs:        uris,
 	}, privateKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create csr failed: %w", err)
@@ -232,6 +245,24 @@ func generateAgentKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("encode csr/key pem failed")
 	}
 	return keyPEM, csrPEM, nil
+}
+
+func buildAgentIdentityURIs(cfg config.Config) []*url.URL {
+	values := []string{
+		fmt.Sprintf("spiffe://aurora.local/node/%s", strings.TrimSpace(cfg.NodeID)),
+		fmt.Sprintf("spiffe://aurora.local/service/%s", strings.TrimSpace(cfg.ServiceID)),
+		fmt.Sprintf("spiffe://aurora.local/role/%s", strings.TrimSpace(cfg.Role)),
+		fmt.Sprintf("spiffe://aurora.local/cluster/%s", strings.TrimSpace(cfg.ClusterID)),
+	}
+	out := make([]*url.URL, 0, len(values))
+	for _, raw := range values {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, parsed)
+	}
+	return out
 }
 
 func writeSecureFile(path string, content []byte, perm os.FileMode) error {
@@ -436,6 +467,9 @@ func (c *HeartbeatClient) invokeWithRecovery(
 	if c == nil {
 		return fmt.Errorf("heartbeat client is nil")
 	}
+	if renewErr := c.maybeRenewClientCertificate(ctx); renewErr != nil && c.logger != nil {
+		c.logger.Warn("preflight certificate renewal check failed", "error", renewErr)
+	}
 	conn := c.currentConn()
 	if conn == nil {
 		if err := c.reconnect(); err != nil {
@@ -532,6 +566,141 @@ func (c *HeartbeatClient) currentConn() *gogrpc.ClientConn {
 	c.connMu.RLock()
 	defer c.connMu.RUnlock()
 	return c.conn
+}
+
+func (c *HeartbeatClient) maybeRenewClientCertificate(ctx context.Context) error {
+	if c == nil {
+		return fmt.Errorf("heartbeat client is nil")
+	}
+	now := time.Now().UTC()
+
+	c.certRenewMu.Lock()
+	defer c.certRenewMu.Unlock()
+	if !c.lastCertCheckAt.IsZero() && now.Sub(c.lastCertCheckAt) < certRenewCheckInterval {
+		return nil
+	}
+	c.lastCertCheckAt = now
+
+	leaf, err := loadLeafCertificate(c.cfg.AdminTLSCertPath)
+	if err != nil {
+		return err
+	}
+	renewBefore := calculateRenewBeforeWindow(leaf)
+	if now.Before(leaf.NotAfter.Add(-renewBefore)) {
+		return nil
+	}
+
+	if c.logger != nil {
+		c.logger.Info(
+			"client certificate is nearing expiry; renewing via mTLS",
+			"not_after", leaf.NotAfter.UTC().Format(time.RFC3339),
+			"renew_before", renewBefore.String(),
+		)
+	}
+	return c.renewClientCertificate(ctx)
+}
+
+func (c *HeartbeatClient) renewClientCertificate(ctx context.Context) error {
+	keyPEM, csrPEM, err := generateAgentKeyAndCSR(c.cfg)
+	if err != nil {
+		return err
+	}
+
+	callCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, defaultInvokeTimeout)
+		defer cancel()
+	}
+
+	conn := c.currentConn()
+	if conn == nil {
+		if err := c.reconnect(); err != nil {
+			return err
+		}
+		conn = c.currentConn()
+		if conn == nil {
+			return fmt.Errorf("admin rpc connection is unavailable")
+		}
+	}
+
+	req, err := structpb.NewStruct(map[string]any{
+		"csr_pem":    strings.TrimSpace(string(csrPEM)),
+		"hostname":   strings.TrimSpace(c.cfg.Hostname),
+		"ip":         strings.TrimSpace(c.cfg.AgentIP),
+		"cluster_id": strings.TrimSpace(c.cfg.ClusterID),
+	})
+	if err != nil {
+		return err
+	}
+	resp := &structpb.Struct{}
+	if err := conn.Invoke(callCtx, runtimeRenewAgentCertPath, req, resp); err != nil {
+		return err
+	}
+
+	clientCertPEM := strings.TrimSpace(readStructString(resp, "client_cert_pem"))
+	caCertPEM := strings.TrimSpace(readStructString(resp, "ca_cert_pem"))
+	if clientCertPEM == "" || caCertPEM == "" {
+		return fmt.Errorf("renew certificate response missing cert chain")
+	}
+	if err := writeSecureFile(c.cfg.AdminTLSKeyPath, []byte(strings.TrimSpace(string(keyPEM))+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed tls key failed: %w", err)
+	}
+	if err := writeSecureFile(c.cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed tls cert failed: %w", err)
+	}
+	if err := writeSecureFile(c.cfg.AdminTLSCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed tls ca failed: %w", err)
+	}
+	if err := c.reconnect(); err != nil {
+		return err
+	}
+	if c.logger != nil {
+		c.logger.Info("client certificate renewal completed")
+	}
+	return nil
+}
+
+func loadLeafCertificate(certPath string) (*x509.Certificate, error) {
+	raw, err := os.ReadFile(strings.TrimSpace(certPath))
+	if err != nil {
+		return nil, fmt.Errorf("read tls cert failed: %w", err)
+	}
+	rest := raw
+	for len(rest) > 0 {
+		block, next := pem.Decode(rest)
+		rest = next
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, parseErr := x509.ParseCertificate(block.Bytes)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		return cert, nil
+	}
+	return nil, fmt.Errorf("no certificate block found")
+}
+
+func calculateRenewBeforeWindow(cert *x509.Certificate) time.Duration {
+	if cert == nil {
+		return 24 * time.Hour
+	}
+	lifetime := cert.NotAfter.Sub(cert.NotBefore)
+	if lifetime <= 0 {
+		return 24 * time.Hour
+	}
+	window := lifetime / 5
+	if window < 6*time.Hour {
+		window = 6 * time.Hour
+	}
+	if window > 72*time.Hour {
+		window = 72 * time.Hour
+	}
+	return window
 }
 
 func shouldTryBootstrapRotation(err error, bootstrapToken string) bool {

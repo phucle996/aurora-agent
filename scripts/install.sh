@@ -561,6 +561,8 @@ ensure_env_file() {
 
   run_root bash -lc "cat > '${ENV_FILE}' <<'EOF'
 AURORA_NODE_ID=
+AURORA_AGENT_SERVICE_ID=aurora-agent
+AURORA_AGENT_ROLE=agent
 AURORA_AGENT_VERSION=
 AURORA_AGENT_PLATFORM=linux
 AURORA_LIBVIRT_URI=qemu+unix:///system
@@ -574,6 +576,7 @@ AURORA_ADMIN_SERVER_NAME=
 AURORA_ADMIN_TLS_CA_PATH=/etc/aurora/certs/agent-ca.crt
 AURORA_ADMIN_TLS_CERT_PATH=/etc/aurora/certs/agent.crt
 AURORA_ADMIN_TLS_KEY_PATH=/etc/aurora/certs/agent.key
+AURORA_AGENT_ADMIN_CLIENT_ROLE=control-plane
 AURORA_AGENT_HEARTBEAT_INTERVAL=15s
 AURORA_LOG_JSON=true
 AURORA_LOG_LEVEL=info

@@ -3,6 +3,7 @@ package agent
 import (
 	"aurora-agent/internal/agent/install"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -73,20 +74,21 @@ func (a *Agent) runProbeListener(ctx context.Context) error {
 
 func authorizeAdminClientInterceptor(cfg config.Config) grpc.UnaryServerInterceptor {
 	expectedCN := strings.TrimSpace(cfg.AdminClientCN)
+	expectedRole := strings.TrimSpace(strings.ToLower(cfg.AdminClientRole))
 	return func(
 		ctx context.Context,
 		req any,
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		if err := authorizeAdminClientFromContext(ctx, expectedCN); err != nil {
+		if err := authorizeAdminClientFromContext(ctx, expectedCN, expectedRole); err != nil {
 			return nil, ggrpcstatus.Error(codes.PermissionDenied, err.Error())
 		}
 		return handler(ctx, req)
 	}
 }
 
-func authorizeAdminClientFromContext(ctx context.Context, expectedCN string) error {
+func authorizeAdminClientFromContext(ctx context.Context, expectedCN string, expectedRole string) error {
 	peerInfo, ok := ggrpcpeer.FromContext(ctx)
 	if !ok || peerInfo == nil || peerInfo.AuthInfo == nil {
 		return fmt.Errorf("missing peer auth info")
@@ -98,19 +100,53 @@ func authorizeAdminClientFromContext(ctx context.Context, expectedCN string) err
 	if len(tlsInfo.State.PeerCertificates) == 0 {
 		return fmt.Errorf("missing peer certificate")
 	}
-	if expectedCN == "" {
-		return nil
-	}
 	cert := tlsInfo.State.PeerCertificates[0]
-	if strings.EqualFold(strings.TrimSpace(cert.Subject.CommonName), expectedCN) {
+
+	if expectedRole != "" {
+		role := strings.TrimSpace(strings.ToLower(readRoleFromCertificateURIs(cert)))
+		if role == "" {
+			return fmt.Errorf("missing role claim in certificate")
+		}
+		if role != expectedRole {
+			return fmt.Errorf("unauthorized role")
+		}
 		return nil
 	}
-	for _, dnsName := range cert.DNSNames {
-		if strings.EqualFold(strings.TrimSpace(dnsName), expectedCN) {
+
+	if expectedCN != "" {
+		if strings.EqualFold(strings.TrimSpace(cert.Subject.CommonName), expectedCN) {
 			return nil
 		}
+		for _, dnsName := range cert.DNSNames {
+			if strings.EqualFold(strings.TrimSpace(dnsName), expectedCN) {
+				return nil
+			}
+		}
+		return fmt.Errorf("unauthorized client certificate")
 	}
-	return fmt.Errorf("unauthorized client certificate")
+	return nil
+}
+
+func readRoleFromCertificateURIs(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	for _, uri := range cert.URIs {
+		if uri == nil || !strings.EqualFold(strings.TrimSpace(uri.Scheme), "spiffe") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(uri.Host), "aurora.local") {
+			continue
+		}
+		pathParts := strings.Split(strings.Trim(strings.TrimSpace(uri.Path), "/"), "/")
+		if len(pathParts) != 2 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(pathParts[0]), "role") {
+			return strings.TrimSpace(pathParts[1])
+		}
+	}
+	return ""
 }
 
 type agentService struct {

@@ -16,6 +16,8 @@ const (
 
 type Config struct {
 	NodeID            string
+	ServiceID         string
+	Role              string
 	Hostname          string
 	ProbeListenAddr   string
 	HealthInterval    time.Duration
@@ -23,6 +25,7 @@ type Config struct {
 	AdminGRPCAddr     string
 	AdminServerName   string
 	AdminClientCN     string
+	AdminClientRole   string
 	AdminTLSCAPath    string
 	AdminTLSCertPath  string
 	AdminTLSKeyPath   string
@@ -44,6 +47,8 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		NodeID:            env("AURORA_NODE_ID", hostname),
+		ServiceID:         env("AURORA_AGENT_SERVICE_ID", "aurora-agent"),
+		Role:              env("AURORA_AGENT_ROLE", "agent"),
 		Hostname:          hostname,
 		ProbeListenAddr:   env("AURORA_AGENT_PROBE_ADDR", "0.0.0.0:7443"),
 		HealthInterval:    envDuration("AURORA_HEALTH_INTERVAL", 10*time.Second),
@@ -51,6 +56,7 @@ func Load() (Config, error) {
 		AdminGRPCAddr:     env("AURORA_ADMIN_GRPC_ADDR", ""),
 		AdminServerName:   env("AURORA_ADMIN_SERVER_NAME", ""),
 		AdminClientCN:     env("AURORA_AGENT_ADMIN_CLIENT_CN", env("AURORA_ADMIN_SERVER_NAME", "admin.aurora.local")),
+		AdminClientRole:   env("AURORA_AGENT_ADMIN_CLIENT_ROLE", "control-plane"),
 		AdminTLSCAPath:    env("AURORA_ADMIN_TLS_CA_PATH", ""),
 		AdminTLSCertPath:  env("AURORA_ADMIN_TLS_CERT_PATH", ""),
 		AdminTLSKeyPath:   env("AURORA_ADMIN_TLS_KEY_PATH", ""),
@@ -73,6 +79,12 @@ func Load() (Config, error) {
 func (c Config) Validate() error {
 	if c.NodeID == "" {
 		return errors.New("AURORA_NODE_ID is required")
+	}
+	if strings.TrimSpace(c.ServiceID) == "" {
+		return errors.New("AURORA_AGENT_SERVICE_ID is required")
+	}
+	if strings.TrimSpace(c.Role) == "" {
+		return errors.New("AURORA_AGENT_ROLE is required")
 	}
 	if strings.TrimSpace(c.AgentVersion) == "" {
 		return errors.New("agent version must not be empty")
