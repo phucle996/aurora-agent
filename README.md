@@ -55,7 +55,7 @@ go run ./cmd/agent
 ```bash
 cd aurora-agent
 chmod +x scripts/install.sh
-./scripts/install.sh --admin-grpc-endpoint admin.aurora.local:443 --bootstrap-token
+./scripts/install.sh --admin-grpc-endpoint admin.aurora.local:443 --bootstrap-token --cluster-id default
 ```
 
 Script sẽ:
@@ -99,7 +99,7 @@ Chi tiết đầy đủ xem `CONFIGURATION.md`.
 - `AURORA_ADMIN_TLS_CERT_PATH`
 - `AURORA_ADMIN_TLS_KEY_PATH`
 - `AURORA_AGENT_BOOTSTRAP_TOKEN` (bắt buộc lúc install để rotate cert mới)
-- `AURORA_AGENT_CLUSTER_ID`
+- `AURORA_AGENT_CLUSTER_ID` (`default` nếu không truyền)
 - `AURORA_AGENT_IP`
 - `AURORA_AGENT_HEARTBEAT_INTERVAL`
 

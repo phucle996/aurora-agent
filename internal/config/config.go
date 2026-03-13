@@ -70,7 +70,7 @@ func Load() (Config, error) {
 		AgentTLSServerCertPath: env("AURORA_AGENT_TLS_SERVER_CERT_PATH", env("AURORA_ADMIN_TLS_CERT_PATH", "")),
 		AgentTLSServerKeyPath:  env("AURORA_AGENT_TLS_SERVER_KEY_PATH", env("AURORA_ADMIN_TLS_KEY_PATH", "")),
 		BootstrapToken:         env("AURORA_AGENT_BOOTSTRAP_TOKEN", ""),
-		ClusterID:              env("AURORA_AGENT_CLUSTER_ID", ""),
+		ClusterID:              env("AURORA_AGENT_CLUSTER_ID", "default"),
 		AgentIP:                env("AURORA_AGENT_IP", ""),
 		HeartbeatInterval:      envDuration("AURORA_AGENT_HEARTBEAT_INTERVAL", 15*time.Second),
 		AgentGRPCEndpoint:      env("AURORA_AGENT_GRPC_ENDPOINT", ""),

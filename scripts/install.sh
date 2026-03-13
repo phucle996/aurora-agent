@@ -476,10 +476,11 @@ apply_runtime_config() {
   fi
 
   local cluster_id
-  cluster_id="$(printf '%s' "${CLI_CLUSTER_ID:-${AURORA_AGENT_CLUSTER_ID:-}}" | xargs || true)"
-  if [ -n "$cluster_id" ]; then
-    set_env_kv "$ENV_FILE" "AURORA_AGENT_CLUSTER_ID" "$cluster_id"
+  cluster_id="$(printf '%s' "${CLI_CLUSTER_ID:-${AURORA_AGENT_CLUSTER_ID:-default}}" | xargs || true)"
+  if [ -z "$cluster_id" ]; then
+    cluster_id="default"
   fi
+  set_env_kv "$ENV_FILE" "AURORA_AGENT_CLUSTER_ID" "$cluster_id"
 
   local agent_ip
   agent_ip="$(printf '%s' "${CLI_AGENT_IP:-${AURORA_AGENT_IP:-}}" | xargs || true)"
@@ -493,7 +494,7 @@ apply_runtime_config() {
     set_env_kv "$ENV_FILE" "AURORA_AGENT_GRPC_ENDPOINT" "$agent_grpc_endpoint"
   fi
 
-  log "runtime config admin_grpc_addr=${admin_grpc_endpoint} heartbeat=${heartbeat_interval} admin_client_cn=${admin_client_cn:-<unset>}"
+  log "runtime config admin_grpc_addr=${admin_grpc_endpoint} heartbeat=${heartbeat_interval} cluster_id=${cluster_id} admin_client_cn=${admin_client_cn:-<unset>}"
 }
 
 resolve_repo_default() {
@@ -610,7 +611,7 @@ AURORA_AGENT_PLATFORM=linux
 AURORA_LIBVIRT_URI=qemu+unix:///system
 AURORA_AGENT_PROBE_ADDR=0.0.0.0:7443
 AURORA_AGENT_GRPC_ENDPOINT=
-AURORA_AGENT_CLUSTER_ID=
+AURORA_AGENT_CLUSTER_ID=default
 AURORA_AGENT_IP=
 AURORA_AGENT_BOOTSTRAP_TOKEN=
 AURORA_ADMIN_GRPC_ADDR=

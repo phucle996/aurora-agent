@@ -21,7 +21,7 @@ Aurora Agent đọc config từ environment variables.
 | `AURORA_AGENT_HEARTBEAT_INTERVAL` | `15s` | Chu kỳ heartbeat lên Admin |
 | `AURORA_AGENT_PROBE_ADDR` | `0.0.0.0:7443` | Agent probe listen addr |
 | `AURORA_AGENT_GRPC_ENDPOINT` | empty | Endpoint Admin dùng để gọi ngược agent (optional) |
-| `AURORA_AGENT_CLUSTER_ID` | empty | Cluster membership id khi bootstrap |
+| `AURORA_AGENT_CLUSTER_ID` | `default` | Cluster membership id khi bootstrap |
 | `AURORA_AGENT_IP` | empty | IP address advertise khi bootstrap |
 | `AURORA_AGENT_PLATFORM` | `linux` | Platform label để seed etcd |
 | `AURORA_LIBVIRT_URI` | `qemu+unix:///system` | Libvirt URI |
