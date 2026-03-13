@@ -336,12 +336,14 @@ endpoint_has_explicit_port() {
 }
 
 preflight_runtime_prerequisites() {
-  local admin_grpc_addr admin_host admin_server_ca admin_client_ca admin_cert admin_key bootstrap_token
+  local admin_grpc_addr admin_host admin_server_ca admin_client_ca client_cert client_key server_cert server_key bootstrap_token
   admin_grpc_addr="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_GRPC_ADDR")"
   admin_server_ca="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_SERVER_CA_PATH")"
   admin_client_ca="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_CLIENT_CA_PATH")"
-  admin_cert="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CERT_PATH")"
-  admin_key="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_KEY_PATH")"
+  client_cert="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CLIENT_CERT_PATH")"
+  client_key="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CLIENT_KEY_PATH")"
+  server_cert="$(read_env_kv "$ENV_FILE" "AURORA_AGENT_TLS_SERVER_CERT_PATH")"
+  server_key="$(read_env_kv "$ENV_FILE" "AURORA_AGENT_TLS_SERVER_KEY_PATH")"
   bootstrap_token="$(read_env_kv "$ENV_FILE" "AURORA_AGENT_BOOTSTRAP_TOKEN")"
 
   [ -n "$admin_grpc_addr" ] || {
@@ -378,12 +380,20 @@ preflight_runtime_prerequisites() {
     fi
   fi
 
-  [ -n "$admin_cert" ] || {
-    echo "AURORA_ADMIN_TLS_CERT_PATH is required" >&2
+  [ -n "$client_cert" ] || {
+    echo "AURORA_ADMIN_TLS_CLIENT_CERT_PATH is required" >&2
     exit 1
   }
-  [ -n "$admin_key" ] || {
-    echo "AURORA_ADMIN_TLS_KEY_PATH is required" >&2
+  [ -n "$client_key" ] || {
+    echo "AURORA_ADMIN_TLS_CLIENT_KEY_PATH is required" >&2
+    exit 1
+  }
+  [ -n "$server_cert" ] || {
+    echo "AURORA_AGENT_TLS_SERVER_CERT_PATH is required" >&2
+    exit 1
+  }
+  [ -n "$server_key" ] || {
+    echo "AURORA_AGENT_TLS_SERVER_KEY_PATH is required" >&2
     exit 1
   }
   [ -n "$bootstrap_token" ] || {
@@ -394,16 +404,15 @@ preflight_runtime_prerequisites() {
 }
 
 force_bootstrap_cert_rotation() {
-  local admin_cert admin_key
-  admin_cert="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CERT_PATH")"
-  admin_key="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_KEY_PATH")"
+  local client_cert client_key server_cert server_key
+  client_cert="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CLIENT_CERT_PATH")"
+  client_key="$(read_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CLIENT_KEY_PATH")"
+  server_cert="$(read_env_kv "$ENV_FILE" "AURORA_AGENT_TLS_SERVER_CERT_PATH")"
+  server_key="$(read_env_kv "$ENV_FILE" "AURORA_AGENT_TLS_SERVER_KEY_PATH")"
 
-  [ -n "$admin_cert" ] || return
-  [ -n "$admin_key" ] || return
-
-  if run_root test -e "$admin_cert" || run_root test -e "$admin_key"; then
-    log "remove existing mTLS cert/key to force fresh bootstrap cert issuance"
-    run_root rm -f "$admin_cert" "$admin_key"
+  if run_root test -e "$client_cert" || run_root test -e "$client_key" || run_root test -e "$server_cert" || run_root test -e "$server_key"; then
+    log "remove existing mTLS client/server certs to force fresh bootstrap cert issuance"
+    run_root rm -f "$client_cert" "$client_key" "$server_cert" "$server_key"
   fi
 }
 
@@ -431,21 +440,30 @@ apply_runtime_config() {
   admin_server_ca="$(printf '%s' "${CLI_ADMIN_TLS_CA_PATH:-${AURORA_ADMIN_SERVER_CA_PATH:-${AURORA_ADMIN_TLS_CA_PATH:-/etc/aurora/certs/ca.crt}}}" | xargs || true)"
   local admin_client_ca
   admin_client_ca="$(printf '%s' "${CLI_ADMIN_CLIENT_CA_PATH:-${AURORA_ADMIN_CLIENT_CA_PATH:-/etc/aurora/certs/agent-ca.crt}}" | xargs || true)"
-  local admin_tls_cert
-  admin_tls_cert="$(printf '%s' "${CLI_ADMIN_TLS_CERT_PATH:-${AURORA_ADMIN_TLS_CERT_PATH:-/etc/aurora/certs/agent.crt}}" | xargs || true)"
-  local admin_tls_key
-  admin_tls_key="$(printf '%s' "${CLI_ADMIN_TLS_KEY_PATH:-${AURORA_ADMIN_TLS_KEY_PATH:-/etc/aurora/certs/agent.key}}" | xargs || true)"
+  local admin_tls_client_cert
+  admin_tls_client_cert="$(printf '%s' "${CLI_ADMIN_TLS_CERT_PATH:-${AURORA_ADMIN_TLS_CLIENT_CERT_PATH:-${AURORA_ADMIN_TLS_CERT_PATH:-/etc/aurora/certs/agent-client.crt}}}" | xargs || true)"
+  local admin_tls_client_key
+  admin_tls_client_key="$(printf '%s' "${CLI_ADMIN_TLS_KEY_PATH:-${AURORA_ADMIN_TLS_CLIENT_KEY_PATH:-${AURORA_ADMIN_TLS_KEY_PATH:-/etc/aurora/certs/agent-client.key}}}" | xargs || true)"
+  local agent_tls_server_cert
+  agent_tls_server_cert="$(printf '%s' "${AURORA_AGENT_TLS_SERVER_CERT_PATH:-/etc/aurora/certs/agent-server.crt}" | xargs || true)"
+  local agent_tls_server_key
+  agent_tls_server_key="$(printf '%s' "${AURORA_AGENT_TLS_SERVER_KEY_PATH:-/etc/aurora/certs/agent-server.key}" | xargs || true)"
 
-  if [ -z "$admin_server_ca" ] || [ -z "$admin_client_ca" ] || [ -z "$admin_tls_cert" ] || [ -z "$admin_tls_key" ]; then
-    echo "admin tls paths are required (server_ca/client_ca/cert/key)" >&2
+  if [ -z "$admin_server_ca" ] || [ -z "$admin_client_ca" ] || [ -z "$admin_tls_client_cert" ] || [ -z "$admin_tls_client_key" ] || [ -z "$agent_tls_server_cert" ] || [ -z "$agent_tls_server_key" ]; then
+    echo "admin tls paths are required (server_ca/client_ca/client_cert/client_key/server_cert/server_key)" >&2
     exit 1
   fi
   # Keep legacy key for backward compatibility with older binaries.
   set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CA_PATH" "$admin_server_ca"
   set_env_kv "$ENV_FILE" "AURORA_ADMIN_SERVER_CA_PATH" "$admin_server_ca"
   set_env_kv "$ENV_FILE" "AURORA_ADMIN_CLIENT_CA_PATH" "$admin_client_ca"
-  set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CERT_PATH" "$admin_tls_cert"
-  set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_KEY_PATH" "$admin_tls_key"
+  set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CERT_PATH" "$admin_tls_client_cert"
+  set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_KEY_PATH" "$admin_tls_client_key"
+  set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CLIENT_CERT_PATH" "$admin_tls_client_cert"
+  set_env_kv "$ENV_FILE" "AURORA_ADMIN_TLS_CLIENT_KEY_PATH" "$admin_tls_client_key"
+  set_env_kv "$ENV_FILE" "AURORA_AGENT_TLS_SERVER_CERT_PATH" "$agent_tls_server_cert"
+  set_env_kv "$ENV_FILE" "AURORA_AGENT_TLS_SERVER_KEY_PATH" "$agent_tls_server_key"
+  set_env_kv "$ENV_FILE" "AURORA_AGENT_ADMIN_CLIENT_SERVICE_ID" "${AURORA_AGENT_ADMIN_CLIENT_SERVICE_ID:-aurora-admin}"
 
   local heartbeat_interval
   heartbeat_interval="$(printf '%s' "${CLI_HEARTBEAT_INTERVAL:-${AURORA_AGENT_HEARTBEAT_INTERVAL:-15s}}" | xargs || true)"
@@ -600,8 +618,13 @@ AURORA_ADMIN_SERVER_NAME=
 AURORA_ADMIN_TLS_CA_PATH=/etc/aurora/certs/ca.crt
 AURORA_ADMIN_SERVER_CA_PATH=/etc/aurora/certs/ca.crt
 AURORA_ADMIN_CLIENT_CA_PATH=/etc/aurora/certs/agent-ca.crt
-AURORA_ADMIN_TLS_CERT_PATH=/etc/aurora/certs/agent.crt
-AURORA_ADMIN_TLS_KEY_PATH=/etc/aurora/certs/agent.key
+AURORA_ADMIN_TLS_CERT_PATH=/etc/aurora/certs/agent-client.crt
+AURORA_ADMIN_TLS_KEY_PATH=/etc/aurora/certs/agent-client.key
+AURORA_ADMIN_TLS_CLIENT_CERT_PATH=/etc/aurora/certs/agent-client.crt
+AURORA_ADMIN_TLS_CLIENT_KEY_PATH=/etc/aurora/certs/agent-client.key
+AURORA_AGENT_TLS_SERVER_CERT_PATH=/etc/aurora/certs/agent-server.crt
+AURORA_AGENT_TLS_SERVER_KEY_PATH=/etc/aurora/certs/agent-server.key
+AURORA_AGENT_ADMIN_CLIENT_SERVICE_ID=aurora-admin
 AURORA_AGENT_ADMIN_CLIENT_ROLE=control-plane
 AURORA_AGENT_HEARTBEAT_INTERVAL=15s
 AURORA_LOG_JSON=true

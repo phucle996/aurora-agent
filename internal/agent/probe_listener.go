@@ -74,6 +74,7 @@ func (a *Agent) runProbeListener(ctx context.Context) error {
 
 func authorizeAdminClientInterceptor(cfg config.Config) grpc.UnaryServerInterceptor {
 	expectedCN := strings.TrimSpace(cfg.AdminClientCN)
+	expectedServiceID := strings.TrimSpace(strings.ToLower(cfg.AdminClientServiceID))
 	expectedRole := strings.TrimSpace(strings.ToLower(cfg.AdminClientRole))
 	return func(
 		ctx context.Context,
@@ -81,14 +82,14 @@ func authorizeAdminClientInterceptor(cfg config.Config) grpc.UnaryServerIntercep
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		if err := authorizeAdminClientFromContext(ctx, expectedCN, expectedRole); err != nil {
+		if err := authorizeAdminClientFromContext(ctx, expectedCN, expectedServiceID, expectedRole); err != nil {
 			return nil, ggrpcstatus.Error(codes.PermissionDenied, err.Error())
 		}
 		return handler(ctx, req)
 	}
 }
 
-func authorizeAdminClientFromContext(ctx context.Context, expectedCN string, expectedRole string) error {
+func authorizeAdminClientFromContext(ctx context.Context, expectedCN string, expectedServiceID string, expectedRole string) error {
 	peerInfo, ok := ggrpcpeer.FromContext(ctx)
 	if !ok || peerInfo == nil || peerInfo.AuthInfo == nil {
 		return fmt.Errorf("missing peer auth info")
@@ -101,14 +102,26 @@ func authorizeAdminClientFromContext(ctx context.Context, expectedCN string, exp
 		return fmt.Errorf("missing peer certificate")
 	}
 	cert := tlsInfo.State.PeerCertificates[0]
+	claims := readIdentityClaimsFromCertificateURIs(cert)
 
-	if expectedRole != "" {
-		role := strings.TrimSpace(strings.ToLower(readRoleFromCertificateURIs(cert)))
-		if role == "" {
-			return fmt.Errorf("missing role claim in certificate")
+	if expectedServiceID != "" || expectedRole != "" {
+		if expectedServiceID != "" {
+			serviceID := strings.TrimSpace(strings.ToLower(claims.ServiceID))
+			if serviceID == "" {
+				return fmt.Errorf("missing service_id claim in certificate")
+			}
+			if serviceID != expectedServiceID {
+				return fmt.Errorf("unauthorized service")
+			}
 		}
-		if role != expectedRole {
-			return fmt.Errorf("unauthorized role")
+		if expectedRole != "" {
+			role := strings.TrimSpace(strings.ToLower(claims.Role))
+			if role == "" {
+				return fmt.Errorf("missing role claim in certificate")
+			}
+			if role != expectedRole {
+				return fmt.Errorf("unauthorized role")
+			}
 		}
 		return nil
 	}
@@ -127,9 +140,15 @@ func authorizeAdminClientFromContext(ctx context.Context, expectedCN string, exp
 	return nil
 }
 
-func readRoleFromCertificateURIs(cert *x509.Certificate) string {
+type probePeerIdentityClaims struct {
+	ServiceID string
+	Role      string
+}
+
+func readIdentityClaimsFromCertificateURIs(cert *x509.Certificate) probePeerIdentityClaims {
+	claims := probePeerIdentityClaims{}
 	if cert == nil {
-		return ""
+		return claims
 	}
 	for _, uri := range cert.URIs {
 		if uri == nil || !strings.EqualFold(strings.TrimSpace(uri.Scheme), "spiffe") {
@@ -142,11 +161,14 @@ func readRoleFromCertificateURIs(cert *x509.Certificate) string {
 		if len(pathParts) != 2 {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(pathParts[0]), "role") {
-			return strings.TrimSpace(pathParts[1])
+		switch strings.ToLower(strings.TrimSpace(pathParts[0])) {
+		case "service":
+			claims.ServiceID = strings.TrimSpace(pathParts[1])
+		case "role":
+			claims.Role = strings.TrimSpace(pathParts[1])
 		}
 	}
-	return ""
+	return claims
 }
 
 type agentService struct {

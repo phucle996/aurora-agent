@@ -96,14 +96,19 @@ func ensureAgentClientCertificate(
 	logger *slog.Logger,
 	force bool,
 ) error {
-	if !force && certAndKeyExists(cfg.AdminTLSCertPath, cfg.AdminTLSKeyPath) {
+	if !force && certAndKeyExists(cfg.AdminTLSClientCertPath, cfg.AdminTLSClientKeyPath) &&
+		certAndKeyExists(cfg.AgentTLSServerCertPath, cfg.AgentTLSServerKeyPath) {
 		return nil
 	}
 	if strings.TrimSpace(cfg.BootstrapToken) == "" {
-		return fmt.Errorf("missing agent client cert/key and bootstrap token")
+		return fmt.Errorf("missing agent tls materials and bootstrap token")
 	}
 
-	generatedKeyPEM, csrPEM, err := generateAgentKeyAndCSR(cfg)
+	clientKeyPEM, clientCSRPEM, err := generateAgentClientKeyAndCSR(cfg)
+	if err != nil {
+		return err
+	}
+	serverKeyPEM, serverCSRPEM, err := generateAgentServerKeyAndCSR(cfg)
 	if err != nil {
 		return err
 	}
@@ -128,7 +133,8 @@ func ensureAgentClientCertificate(
 		"hostname":            strings.TrimSpace(cfg.Hostname),
 		"ip":                  strings.TrimSpace(cfg.AgentIP),
 		"bootstrap_token":     strings.TrimSpace(cfg.BootstrapToken),
-		"csr_pem":             strings.TrimSpace(string(csrPEM)),
+		"csr_pem":             strings.TrimSpace(string(clientCSRPEM)),
+		"server_csr_pem":      strings.TrimSpace(string(serverCSRPEM)),
 		"agent_probe_addr":    strings.TrimSpace(cfg.ProbeListenAddr),
 		"agent_grpc_endpoint": strings.TrimSpace(cfg.AgentGRPCEndpoint),
 		"platform":            strings.TrimSpace(cfg.Platform),
@@ -142,22 +148,30 @@ func ensureAgentClientCertificate(
 	}
 
 	clientCertPEM := strings.TrimSpace(readStructString(resp, "client_cert_pem"))
-	caCertPEM := strings.TrimSpace(readStructString(resp, "ca_cert_pem"))
-	if clientCertPEM == "" || caCertPEM == "" {
+	serverCertPEM := strings.TrimSpace(readStructString(resp, "server_cert_pem"))
+	adminServerCAPEM := strings.TrimSpace(readStructString(resp, "admin_server_ca_pem"))
+	if clientCertPEM == "" || serverCertPEM == "" || adminServerCAPEM == "" {
 		return fmt.Errorf("bootstrap rpc response missing certificates")
 	}
-	clientKeyPEM := strings.TrimSpace(string(generatedKeyPEM))
-	if clientKeyPEM == "" {
+	clientKeyMaterial := strings.TrimSpace(string(clientKeyPEM))
+	serverKeyMaterial := strings.TrimSpace(string(serverKeyPEM))
+	if clientKeyMaterial == "" || serverKeyMaterial == "" {
 		return fmt.Errorf("generated client key is empty")
 	}
 
-	if err := writeSecureFile(cfg.AdminTLSKeyPath, []byte(clientKeyPEM+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write agent tls key failed: %w", err)
+	if err := writeSecureFile(cfg.AdminTLSClientKeyPath, []byte(clientKeyMaterial+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write agent client tls key failed: %w", err)
 	}
-	if err := writeSecureFile(cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write agent tls cert failed: %w", err)
+	if err := writeSecureFile(cfg.AdminTLSClientCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write agent client tls cert failed: %w", err)
 	}
-	if err := writeSecureFile(cfg.AdminServerCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
+	if err := writeSecureFile(cfg.AgentTLSServerKeyPath, []byte(serverKeyMaterial+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write agent serving tls key failed: %w", err)
+	}
+	if err := writeSecureFile(cfg.AgentTLSServerCertPath, []byte(serverCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write agent serving tls cert failed: %w", err)
+	}
+	if err := writeSecureFile(cfg.AdminServerCAPath, []byte(adminServerCAPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write admin ca cert failed: %w", err)
 	}
 	if logger != nil {
@@ -211,7 +225,7 @@ func certAndKeyExists(certPath string, keyPath string) bool {
 	return true
 }
 
-func generateAgentKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
+func generateAgentClientKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate agent private key failed: %w", err)
@@ -243,6 +257,43 @@ func generateAgentKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	if len(keyPEM) == 0 || len(csrPEM) == 0 {
 		return nil, nil, fmt.Errorf("encode csr/key pem failed")
+	}
+	return keyPEM, csrPEM, nil
+}
+
+func generateAgentServerKeyAndCSR(cfg config.Config) ([]byte, []byte, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate agent server private key failed: %w", err)
+	}
+
+	dnsNames := uniqueStrings([]string{
+		strings.TrimSpace(cfg.NodeID),
+		strings.TrimSpace(cfg.Hostname),
+		serverEndpointHost(cfg.AgentGRPCEndpoint),
+	})
+	ipAddresses := uniqueIPs([]net.IP{
+		net.ParseIP(strings.TrimSpace(cfg.AgentIP)),
+		parseEndpointIP(cfg.AgentGRPCEndpoint),
+	})
+	uris := buildAgentIdentityURIs(cfg)
+
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: "agent-server:" + strings.TrimSpace(cfg.NodeID),
+		},
+		DNSNames:    dnsNames,
+		IPAddresses: ipAddresses,
+		URIs:        uris,
+	}, privateKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create server csr failed: %w", err)
+	}
+
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	if len(keyPEM) == 0 || len(csrPEM) == 0 {
+		return nil, nil, fmt.Errorf("encode server csr/key pem failed")
 	}
 	return keyPEM, csrPEM, nil
 }
@@ -305,6 +356,47 @@ func uniqueStrings(items []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+func uniqueIPs(items []net.IP) []net.IP {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]net.IP, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		normalized := item.String()
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func serverEndpointHost(endpoint string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" || net.ParseIP(host) != nil {
+		return ""
+	}
+	return host
+}
+
+func parseEndpointIP(endpoint string) net.IP {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		return nil
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	return net.ParseIP(host)
 }
 
 func (c *HeartbeatClient) Close() error {
@@ -581,19 +673,27 @@ func (c *HeartbeatClient) maybeRenewClientCertificate(ctx context.Context) error
 	}
 	c.lastCertCheckAt = now
 
-	leaf, err := loadLeafCertificate(c.cfg.AdminTLSCertPath)
+	clientLeaf, err := loadLeafCertificate(c.cfg.AdminTLSClientCertPath)
 	if err != nil {
 		return err
 	}
-	renewBefore := calculateRenewBeforeWindow(leaf)
-	if now.Before(leaf.NotAfter.Add(-renewBefore)) {
+	serverLeaf, err := loadLeafCertificate(c.cfg.AgentTLSServerCertPath)
+	if err != nil {
+		return err
+	}
+	targetLeaf := clientLeaf
+	if serverLeaf.NotAfter.Before(clientLeaf.NotAfter) {
+		targetLeaf = serverLeaf
+	}
+	renewBefore := calculateRenewBeforeWindow(targetLeaf)
+	if now.Before(targetLeaf.NotAfter.Add(-renewBefore)) {
 		return nil
 	}
 
 	if c.logger != nil {
 		c.logger.Info(
 			"client certificate is nearing expiry; renewing via mTLS",
-			"not_after", leaf.NotAfter.UTC().Format(time.RFC3339),
+			"not_after", targetLeaf.NotAfter.UTC().Format(time.RFC3339),
 			"renew_before", renewBefore.String(),
 		)
 	}
@@ -601,7 +701,11 @@ func (c *HeartbeatClient) maybeRenewClientCertificate(ctx context.Context) error
 }
 
 func (c *HeartbeatClient) renewClientCertificate(ctx context.Context) error {
-	keyPEM, csrPEM, err := generateAgentKeyAndCSR(c.cfg)
+	clientKeyPEM, clientCSRPEM, err := generateAgentClientKeyAndCSR(c.cfg)
+	if err != nil {
+		return err
+	}
+	serverKeyPEM, serverCSRPEM, err := generateAgentServerKeyAndCSR(c.cfg)
 	if err != nil {
 		return err
 	}
@@ -625,10 +729,11 @@ func (c *HeartbeatClient) renewClientCertificate(ctx context.Context) error {
 	}
 
 	req, err := structpb.NewStruct(map[string]any{
-		"csr_pem":    strings.TrimSpace(string(csrPEM)),
-		"hostname":   strings.TrimSpace(c.cfg.Hostname),
-		"ip":         strings.TrimSpace(c.cfg.AgentIP),
-		"cluster_id": strings.TrimSpace(c.cfg.ClusterID),
+		"csr_pem":        strings.TrimSpace(string(clientCSRPEM)),
+		"server_csr_pem": strings.TrimSpace(string(serverCSRPEM)),
+		"hostname":       strings.TrimSpace(c.cfg.Hostname),
+		"ip":             strings.TrimSpace(c.cfg.AgentIP),
+		"cluster_id":     strings.TrimSpace(c.cfg.ClusterID),
 	})
 	if err != nil {
 		return err
@@ -639,17 +744,24 @@ func (c *HeartbeatClient) renewClientCertificate(ctx context.Context) error {
 	}
 
 	clientCertPEM := strings.TrimSpace(readStructString(resp, "client_cert_pem"))
-	caCertPEM := strings.TrimSpace(readStructString(resp, "ca_cert_pem"))
-	if clientCertPEM == "" || caCertPEM == "" {
+	serverCertPEM := strings.TrimSpace(readStructString(resp, "server_cert_pem"))
+	adminServerCAPEM := strings.TrimSpace(readStructString(resp, "admin_server_ca_pem"))
+	if clientCertPEM == "" || serverCertPEM == "" || adminServerCAPEM == "" {
 		return fmt.Errorf("renew certificate response missing cert chain")
 	}
-	if err := writeSecureFile(c.cfg.AdminTLSKeyPath, []byte(strings.TrimSpace(string(keyPEM))+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write renewed tls key failed: %w", err)
+	if err := writeSecureFile(c.cfg.AdminTLSClientKeyPath, []byte(strings.TrimSpace(string(clientKeyPEM))+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed client tls key failed: %w", err)
 	}
-	if err := writeSecureFile(c.cfg.AdminTLSCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write renewed tls cert failed: %w", err)
+	if err := writeSecureFile(c.cfg.AdminTLSClientCertPath, []byte(clientCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed client tls cert failed: %w", err)
 	}
-	if err := writeSecureFile(c.cfg.AdminServerCAPath, []byte(caCertPEM+"\n"), 0o600); err != nil {
+	if err := writeSecureFile(c.cfg.AgentTLSServerKeyPath, []byte(strings.TrimSpace(string(serverKeyPEM))+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed serving tls key failed: %w", err)
+	}
+	if err := writeSecureFile(c.cfg.AgentTLSServerCertPath, []byte(serverCertPEM+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write renewed serving tls cert failed: %w", err)
+	}
+	if err := writeSecureFile(c.cfg.AdminServerCAPath, []byte(adminServerCAPEM+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write renewed tls ca failed: %w", err)
 	}
 	if err := c.reconnect(); err != nil {
