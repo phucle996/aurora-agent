@@ -719,7 +719,9 @@ main() {
 
   if command -v systemctl >/dev/null 2>&1; then
     run_root systemctl daemon-reload
-    run_root systemctl enable --now "$SERVICE_NAME"
+    run_root systemctl enable "$SERVICE_NAME"
+    log "restart service to apply refreshed env + bootstrap certificate rotation"
+    run_root systemctl restart "$SERVICE_NAME"
     if run_root systemctl is-active --quiet "$SERVICE_NAME"; then
       log "service is active: ${SERVICE_NAME}"
     else
