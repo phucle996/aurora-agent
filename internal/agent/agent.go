@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aurora-agent/internal/adminrpc"
+	"aurora-agent/internal/agent/install"
 	"aurora-agent/internal/collector"
 	"context"
 	"fmt"
@@ -24,6 +25,14 @@ type Agent struct {
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Agent, error) {
+	install.ConfigurePolicy(install.Policy{
+		AllowedModules: sliceToSet(cfg.InstallAllowedModules),
+		AllowedHosts:   sliceToSet(cfg.InstallAllowedHosts),
+		AuditLogPath:   cfg.InstallAuditLogPath,
+	})
+	if err := install.InitializeRuntimeState(); err != nil {
+		return nil, fmt.Errorf("initialize install runtime state: %w", err)
+	}
 	heartbeatClient, err := adminrpc.NewHeartbeatClient(cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("admin heartbeat client: %w", err)
@@ -41,6 +50,18 @@ func New(cfg config.Config, logger *slog.Logger) (*Agent, error) {
 		health:          health,
 		heartbeatClient: heartbeatClient,
 	}, nil
+}
+
+func sliceToSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := value
+		if trimmed == "" {
+			continue
+		}
+		out[trimmed] = struct{}{}
+	}
+	return out
 }
 
 func (a *Agent) Run(ctx context.Context) error {

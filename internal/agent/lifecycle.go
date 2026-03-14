@@ -72,6 +72,7 @@ func (a *Agent) runAdminHeartbeatLoop(ctx context.Context) error {
 			AgentProbeAddr:    a.cfg.ProbeListenAddr,
 			AgentGRPCEndpoint: a.cfg.AgentGRPCEndpoint,
 			Platform:          a.cfg.Platform,
+			Architecture:      a.cfg.Architecture,
 		}
 		if err := a.heartbeatClient.ReportHeartbeat(ctx, payload); err != nil {
 			a.logger.Warn("report heartbeat to admin failed", "error", err)

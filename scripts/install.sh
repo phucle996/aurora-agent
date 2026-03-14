@@ -491,8 +491,12 @@ apply_runtime_config() {
   local agent_grpc_endpoint
   agent_grpc_endpoint="$(printf '%s' "${CLI_AGENT_GRPC_ENDPOINT:-${AURORA_AGENT_GRPC_ENDPOINT:-}}" | xargs || true)"
   if [ -n "$agent_grpc_endpoint" ]; then
-    set_env_kv "$ENV_FILE" "AURORA_AGENT_GRPC_ENDPOINT" "$agent_grpc_endpoint"
+  set_env_kv "$ENV_FILE" "AURORA_AGENT_GRPC_ENDPOINT" "$agent_grpc_endpoint"
   fi
+
+  set_env_kv "$ENV_FILE" "AURORA_INSTALL_ALLOWED_MODULES" "${AURORA_INSTALL_ALLOWED_MODULES:-ums,platform,paas,dbaas}"
+  set_env_kv "$ENV_FILE" "AURORA_INSTALL_ALLOWED_ARTIFACT_HOSTS" "${AURORA_INSTALL_ALLOWED_ARTIFACT_HOSTS:-github.com,release-assets.githubusercontent.com,objects.githubusercontent.com}"
+  set_env_kv "$ENV_FILE" "AURORA_INSTALL_AUDIT_LOG_PATH" "${AURORA_INSTALL_AUDIT_LOG_PATH:-/var/lib/aurora-agent/install_audit.jsonl}"
 
   log "runtime config admin_grpc_addr=${admin_grpc_endpoint} heartbeat=${heartbeat_interval} cluster_id=${cluster_id} admin_client_cn=${admin_client_cn:-<unset>}"
 }

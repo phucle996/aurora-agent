@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -39,8 +40,12 @@ type Config struct {
 	HeartbeatInterval      time.Duration
 	AgentGRPCEndpoint      string
 	Platform               string
+	Architecture           string
 	AgentVersion           string
 	LogLevel               string
+	InstallAllowedModules  []string
+	InstallAllowedHosts    []string
+	InstallAuditLogPath    string
 }
 
 func Load() (Config, error) {
@@ -75,8 +80,12 @@ func Load() (Config, error) {
 		HeartbeatInterval:      envDuration("AURORA_AGENT_HEARTBEAT_INTERVAL", 15*time.Second),
 		AgentGRPCEndpoint:      env("AURORA_AGENT_GRPC_ENDPOINT", ""),
 		Platform:               env("AURORA_AGENT_PLATFORM", "linux"),
+		Architecture:           env("AURORA_AGENT_ARCH", runtime.GOARCH),
 		AgentVersion:           HardcodedVersion,
 		LogLevel:               strings.ToLower(env("AURORA_LOG_LEVEL", "info")),
+		InstallAllowedModules:  envCSV("AURORA_INSTALL_ALLOWED_MODULES", []string{"ums", "platform", "paas", "dbaas"}),
+		InstallAllowedHosts:    envCSV("AURORA_INSTALL_ALLOWED_ARTIFACT_HOSTS", []string{"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}),
+		InstallAuditLogPath:    env("AURORA_INSTALL_AUDIT_LOG_PATH", "/var/lib/aurora-agent/install_audit.jsonl"),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -97,6 +106,18 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.AgentVersion) == "" {
 		return errors.New("agent version must not be empty")
+	}
+	if len(c.InstallAllowedModules) == 0 {
+		return errors.New("AURORA_INSTALL_ALLOWED_MODULES must not be empty")
+	}
+	if len(c.InstallAllowedHosts) == 0 {
+		return errors.New("AURORA_INSTALL_ALLOWED_ARTIFACT_HOSTS must not be empty")
+	}
+	if strings.TrimSpace(c.InstallAuditLogPath) == "" {
+		return errors.New("AURORA_INSTALL_AUDIT_LOG_PATH is required")
+	}
+	if strings.TrimSpace(c.Architecture) == "" {
+		return errors.New("agent architecture must not be empty")
 	}
 	if strings.TrimSpace(c.ProbeListenAddr) == "" {
 		return errors.New("AURORA_AGENT_PROBE_ADDR is required")
@@ -195,6 +216,31 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func envCSV(key string, fallback []string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return append([]string(nil), fallback...)
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return append([]string(nil), fallback...)
+	}
+	return out
 }
 
 func fileExists(path string) bool {

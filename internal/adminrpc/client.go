@@ -33,6 +33,7 @@ type HeartbeatPayload struct {
 	AgentProbeAddr    string
 	AgentGRPCEndpoint string
 	Platform          string
+	Architecture      string
 }
 
 type HeartbeatClient struct {

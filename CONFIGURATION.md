@@ -24,6 +24,9 @@ Aurora Agent đọc config từ environment variables.
 | `AURORA_AGENT_CLUSTER_ID` | `default` | Cluster membership id khi bootstrap |
 | `AURORA_AGENT_IP` | empty | IP address advertise khi bootstrap |
 | `AURORA_AGENT_PLATFORM` | `linux` | Platform label để seed etcd |
+| `AURORA_INSTALL_ALLOWED_MODULES` | `ums,platform,paas,dbaas` | Danh sách module agent cho phép bundle install |
+| `AURORA_INSTALL_ALLOWED_ARTIFACT_HOSTS` | `github.com,release-assets.githubusercontent.com,objects.githubusercontent.com` | Danh sách host được phép tải artifact |
+| `AURORA_INSTALL_AUDIT_LOG_PATH` | `/var/lib/aurora-agent/install_audit.jsonl` | Audit log JSONL cho install/restart/uninstall |
 | `AURORA_LIBVIRT_URI` | `qemu+unix:///system` | Libvirt URI |
 | `AURORA_HEALTH_INTERVAL` | `10s` | Libvirt health tick |
 | `AURORA_RECONNECT_INTERVAL` | `4s` | Libvirt reconnect base interval |
@@ -57,3 +60,16 @@ AURORA_AGENT_HEARTBEAT_INTERVAL=15s
 
 AURORA_LOG_LEVEL=info
 ```
+
+## Install Security Notes
+
+- Agent chỉ cho bundle install các module nằm trong `AURORA_INSTALL_ALLOWED_MODULES`.
+- `artifact_url` phải đi qua host nằm trong `AURORA_INSTALL_ALLOWED_ARTIFACT_HOSTS`.
+- Với bundle-managed module, agent còn kiểm tra:
+  - đúng `github.com/<owner>/<repo>/releases/download/...`
+  - đúng `repo slug` theo module
+  - đúng `bundle asset base` theo module
+- Install log/error sẽ tự redact giá trị secret như:
+  - PEM blocks
+  - password/token/secret-like env values
+  - inline TLS file contents

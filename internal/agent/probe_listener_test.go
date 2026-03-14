@@ -21,7 +21,7 @@ func TestAuthorizeAdminClientFromContext_AllowsExpectedServiceAndRole(t *testing
 		},
 	})
 
-	if err := authorizeAdminClientFromContext(ctx, "", "aurora-admin", "control-plane"); err != nil {
+	if err := authorizeAdminClientFromContext(ctx, agentRPCMethodInstallModule, "", "aurora-admin", "control-plane"); err != nil {
 		t.Fatalf("expected authorizeAdminClientFromContext to succeed, got: %v", err)
 	}
 }
@@ -36,7 +36,7 @@ func TestAuthorizeAdminClientFromContext_RejectsWrongService(t *testing.T) {
 		},
 	})
 
-	if err := authorizeAdminClientFromContext(ctx, "", "aurora-admin", "control-plane"); err == nil {
+	if err := authorizeAdminClientFromContext(ctx, agentRPCMethodInstallModule, "", "aurora-admin", "control-plane"); err == nil {
 		t.Fatalf("expected authorizeAdminClientFromContext to reject wrong service")
 	}
 }

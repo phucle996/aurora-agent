@@ -22,6 +22,7 @@ func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload Heartbeat
 		"agent_probe_addr":    strings.TrimSpace(payload.AgentProbeAddr),
 		"agent_grpc_endpoint": strings.TrimSpace(payload.AgentGRPCEndpoint),
 		"platform":            strings.TrimSpace(payload.Platform),
+		"architecture":        strings.TrimSpace(payload.Architecture),
 	})
 	if err != nil {
 		return fmt.Errorf("build heartbeat request failed: %w", err)
