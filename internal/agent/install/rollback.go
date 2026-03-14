@@ -70,6 +70,12 @@ func (r *installRollback) Restore(ctx context.Context, runner CommandRunner, man
 		return nil
 	}
 	var restoreErrs []error
+	if manifest != nil && runner != nil {
+		if serviceName := strings.TrimSpace(manifest.Service.Name); serviceName != "" {
+			logInstallStage(logFn, InstallStageRollback, "stopping service before restoring files")
+			_ = runner.Run(ctx, "systemctl", "stop", serviceName)
+		}
+	}
 	for _, backup := range r.backups {
 		if !backup.Existed {
 			if err := os.Remove(strings.TrimSpace(backup.Path)); err != nil && !os.IsNotExist(err) {

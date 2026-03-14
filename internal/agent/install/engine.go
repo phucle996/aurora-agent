@@ -133,6 +133,9 @@ func (e *Engine) InstallModule(
 	if err := validateManifestAgainstRequest(manifest, req); err != nil {
 		return nil, err
 	}
+	if err := validateInstallEnvAgainstManifest(manifest, req.Env); err != nil {
+		return nil, err
+	}
 
 	data := templateData{
 		Module:         strings.TrimSpace(req.Module),
@@ -270,6 +273,22 @@ func validateManifestAgainstRequest(manifest *ArtifactManifest, req InstallModul
 	return nil
 }
 
+func validateInstallEnvAgainstManifest(manifest *ArtifactManifest, env map[string]string) error {
+	if manifest == nil {
+		return fmt.Errorf("manifest is nil")
+	}
+	if !manifest.Capabilities.AdminRPCBootstrap {
+		return nil
+	}
+	if strings.TrimSpace(env["ADMIN_RPC_ENDPOINT"]) == "" {
+		return fmt.Errorf("manifest requires ADMIN_RPC_ENDPOINT")
+	}
+	if strings.TrimSpace(env["ADMIN_RPC_BOOTSTRAP_TOKEN"]) == "" {
+		return fmt.Errorf("manifest requires ADMIN_RPC_BOOTSTRAP_TOKEN")
+	}
+	return nil
+}
+
 func installBinary(sourcePath string, installPath string, modeRaw string) error {
 	source := strings.TrimSpace(sourcePath)
 	target := strings.TrimSpace(installPath)
@@ -346,13 +365,22 @@ func runManifestHealthcheck(ctx context.Context, runner CommandRunner, manifest 
 			addressHost = "127.0.0.1"
 		}
 		address := net.JoinHostPort(addressHost, strconv.Itoa(int(req.AppPort)))
-		dialer := &net.Dialer{Timeout: timeout}
-		conn, err := dialer.DialContext(ctx, "tcp", address)
-		if err != nil {
-			return ModuleHealthUnhealthy, fmt.Errorf("module tcp healthcheck failed")
+		deadline := time.Now().Add(timeout)
+		var lastErr error
+		for time.Now().Before(deadline) {
+			dialer := &net.Dialer{Timeout: minDuration(2*time.Second, timeout)}
+			conn, err := dialer.DialContext(ctx, "tcp", address)
+			if err == nil {
+				_ = conn.Close()
+				return ModuleHealthHealthy, nil
+			}
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
 		}
-		_ = conn.Close()
-		return ModuleHealthHealthy, nil
+		if lastErr == nil {
+			lastErr = fmt.Errorf("dial timeout")
+		}
+		return ModuleHealthUnhealthy, fmt.Errorf("module tcp healthcheck failed: %w", lastErr)
 	}
 
 	scheme := strings.TrimSpace(manifest.Healthcheck.Scheme)
@@ -370,27 +398,44 @@ func runManifestHealthcheck(ctx context.Context, runner CommandRunner, manifest 
 		},
 	}
 	baseURL := fmt.Sprintf("%s://%s:%d", scheme, host, req.AppPort)
-	for _, path := range manifest.Healthcheck.Paths {
-		target := strings.TrimSpace(path)
-		if target == "" {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := checkSystemdServiceActive(ctx, runner, manifest.Service.Name); err != nil {
+			lastErr = fmt.Errorf("service is not active: %w", err)
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		reqCtx, cancel := context.WithTimeout(ctx, timeout)
-		httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+target, nil)
-		if err != nil {
-			cancel()
-			continue
-		}
-		resp, err := client.Do(httpReq)
-		cancel()
-		if err == nil && resp != nil {
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				return ModuleHealthHealthy, nil
+		for _, path := range manifest.Healthcheck.Paths {
+			target := strings.TrimSpace(path)
+			if target == "" {
+				continue
 			}
+			reqCtx, cancel := context.WithTimeout(ctx, minDuration(3*time.Second, timeout))
+			httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+target, nil)
+			if err != nil {
+				cancel()
+				lastErr = err
+				continue
+			}
+			resp, err := client.Do(httpReq)
+			cancel()
+			if err == nil && resp != nil {
+				resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+					return ModuleHealthHealthy, nil
+				}
+				lastErr = fmt.Errorf("unexpected status %d from %s", resp.StatusCode, target)
+				continue
+			}
+			lastErr = fmt.Errorf("request %s failed: %w", target, err)
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	return ModuleHealthUnhealthy, fmt.Errorf("module healthcheck failed")
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout after %s", timeout)
+	}
+	return ModuleHealthUnhealthy, fmt.Errorf("module healthcheck failed: %w", lastErr)
 }
 
 func checkSystemdServiceActive(ctx context.Context, runner CommandRunner, serviceName string) error {
@@ -416,6 +461,19 @@ func logInstallStage(logFn InstallLogFn, stage InstallStage, message string) {
 	if logFn != nil {
 		logFn(stage, strings.TrimSpace(message))
 	}
+}
+
+func minDuration(a time.Duration, b time.Duration) time.Duration {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func normalizeInstallerAPIVersion(raw string) string {
