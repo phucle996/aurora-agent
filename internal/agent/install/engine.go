@@ -295,7 +295,8 @@ func installBinary(sourcePath string, installPath string, modeRaw string) error 
 	if source == "" || target == "" {
 		return fmt.Errorf("binary source/install path is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	targetDir := filepath.Dir(target)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("create binary install dir failed: %w", err)
 	}
 	src, err := os.Open(source)
@@ -303,16 +304,29 @@ func installBinary(sourcePath string, installPath string, modeRaw string) error 
 		return fmt.Errorf("open binary source failed: %w", err)
 	}
 	defer src.Close()
-	dst, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, parseFileMode(modeRaw, 0o755))
+	mode := parseFileMode(modeRaw, 0o755)
+	tmp, err := os.CreateTemp(targetDir, "."+filepath.Base(target)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("create installed binary failed: %w", err)
+		return fmt.Errorf("create installed binary temp file failed: %w", err)
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
+	tmpPath := tmp.Name()
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod installed binary temp file failed: %w", err)
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("copy installed binary failed: %w", err)
 	}
-	if err := dst.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close installed binary failed: %w", err)
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace installed binary failed: %w", err)
 	}
 	return nil
 }
