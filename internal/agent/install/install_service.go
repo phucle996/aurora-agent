@@ -1,11 +1,11 @@
 package install
 
 import (
-	agentcommandv1 "github.com/phucle996/aurora-proto/agentcommandv1"
 	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	agentcommandv1 "github.com/phucle996/aurora-proto/agentcommandv1"
 	"io"
 	"os"
 	"os/exec"

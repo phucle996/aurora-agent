@@ -1,9 +1,9 @@
 package agent
 
 import (
-	agentcommandv1 "github.com/phucle996/aurora-proto/agentcommandv1"
 	"aurora-agent/internal/agent/install"
 	"context"
+	agentcommandv1 "github.com/phucle996/aurora-proto/agentcommandv1"
 
 	"google.golang.org/grpc"
 )
@@ -143,6 +143,7 @@ func fromProtoUninstallModuleRequest(req *agentcommandv1.UninstallModuleRequest)
 		BinaryPath:    req.GetBinaryPath(),
 		EnvFilePath:   req.GetEnvFilePath(),
 		NginxSitePath: req.GetNginxSitePath(),
+		AssetPaths:    append([]string(nil), req.GetAssetPaths()...),
 	}
 }
 
@@ -182,6 +183,7 @@ func toProtoInstallModuleResult(v *install.InstallModuleResult) *agentcommandv1.
 		BinaryPath:            v.BinaryPath,
 		EnvFilePath:           v.EnvFilePath,
 		NginxSitePath:         v.NginxSitePath,
+		AssetPaths:            append([]string(nil), v.AssetPaths...),
 		Endpoint:              v.Endpoint,
 		Status:                v.Status,
 		Health:                v.Health,
@@ -273,6 +275,7 @@ func toProtoInstalledModuleRecord(v install.InstalledModuleRecord) *agentcommand
 		BinaryPath:            v.BinaryPath,
 		EnvFilePath:           v.EnvFilePath,
 		NginxSitePath:         v.NginxSitePath,
+		AssetPaths:            append([]string(nil), v.AssetPaths...),
 		Endpoint:              v.Endpoint,
 		Status:                v.Status,
 		Health:                v.Health,

@@ -175,6 +175,20 @@ func (e *Engine) InstallModule(
 	if err := installBinary(filepath.Join(unpackDir, manifest.Binary.Path), manifest.Binary.InstallPath, manifest.Binary.Mode); err != nil {
 		return nil, err
 	}
+	assetPaths := make([]string, 0, len(manifest.Assets))
+	for _, asset := range manifest.Assets {
+		installPath := strings.TrimSpace(asset.InstallPath)
+		if installPath == "" {
+			continue
+		}
+		if err := rollback.Capture(installPath); err != nil {
+			return nil, err
+		}
+		if err := installArtifactPath(filepath.Join(unpackDir, asset.Path), installPath); err != nil {
+			return nil, err
+		}
+		assetPaths = append(assetPaths, installPath)
+	}
 	if err := rollback.Capture(manifest.Service.UnitPath); err != nil {
 		return nil, err
 	}
@@ -234,6 +248,7 @@ func (e *Engine) InstallModule(
 		BinaryPath:            strings.TrimSpace(manifest.Binary.InstallPath),
 		EnvFilePath:           strings.TrimSpace(manifest.Env.Path),
 		NginxSitePath:         strings.TrimSpace(manifest.Nginx.SitePath),
+		AssetPaths:            normalizeInstallAssetPaths(assetPaths),
 		Endpoint:              buildModuleEndpoint(req),
 		Status:                InstallStatusInstalled,
 		Health:                health,
@@ -331,6 +346,34 @@ func installBinary(sourcePath string, installPath string, modeRaw string) error 
 	if err := os.Rename(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("replace installed binary failed: %w", err)
+	}
+	return nil
+}
+
+func installArtifactPath(sourcePath string, installPath string) error {
+	source := strings.TrimSpace(sourcePath)
+	target := strings.TrimSpace(installPath)
+	if source == "" || target == "" {
+		return fmt.Errorf("asset source/install path is empty")
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("stat asset source failed: %w", err)
+	}
+	if info.IsDir() {
+		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove existing asset dir failed: %w", err)
+		}
+		if err := copyDir(source, target); err != nil {
+			return fmt.Errorf("copy asset dir failed: %w", err)
+		}
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("asset source is unsupported: %s", source)
+	}
+	if err := copyFile(source, target, info.Mode()); err != nil {
+		return fmt.Errorf("copy asset file failed: %w", err)
 	}
 	return nil
 }

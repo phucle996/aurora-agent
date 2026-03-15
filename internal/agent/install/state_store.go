@@ -126,6 +126,7 @@ func normalizeInstalledModuleRecord(record InstalledModuleRecord) InstalledModul
 	record.BinaryPath = strings.TrimSpace(record.BinaryPath)
 	record.EnvFilePath = strings.TrimSpace(record.EnvFilePath)
 	record.NginxSitePath = strings.TrimSpace(record.NginxSitePath)
+	record.AssetPaths = normalizeInstallAssetPaths(record.AssetPaths)
 	record.Endpoint = strings.TrimSpace(record.Endpoint)
 	record.Status = normalizeInstalledModuleStatus(record.Status)
 	record.Health = normalizeInstalledModuleHealth(record.Health)
@@ -172,4 +173,27 @@ func normalizeInstalledModuleHealth(raw string) string {
 	default:
 		return strings.TrimSpace(raw)
 	}
+}
+
+func normalizeInstallAssetPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

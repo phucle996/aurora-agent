@@ -54,6 +54,15 @@ func validateManifest(manifest *ArtifactManifest) error {
 	if strings.TrimSpace(manifest.Binary.InstallPath) == "" {
 		return fmt.Errorf("manifest binary.install_path is required")
 	}
+	for idx := range manifest.Assets {
+		asset := &manifest.Assets[idx]
+		if strings.TrimSpace(asset.Path) == "" {
+			return fmt.Errorf("manifest assets[%d].path is required", idx)
+		}
+		if strings.TrimSpace(asset.InstallPath) == "" {
+			return fmt.Errorf("manifest assets[%d].install_path is required", idx)
+		}
+	}
 	if strings.TrimSpace(manifest.Service.Name) == "" {
 		return fmt.Errorf("manifest service.name is required")
 	}

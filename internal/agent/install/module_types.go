@@ -69,6 +69,7 @@ type InstallModuleResult struct {
 	BinaryPath            string               `json:"binary_path,omitempty"`
 	EnvFilePath           string               `json:"env_file_path,omitempty"`
 	NginxSitePath         string               `json:"nginx_site_path,omitempty"`
+	AssetPaths            []string             `json:"asset_paths,omitempty"`
 	Endpoint              string               `json:"endpoint,omitempty"`
 	Status                string               `json:"status"`
 	Health                string               `json:"health,omitempty"`
@@ -118,14 +119,15 @@ type RestartModuleResponse struct {
 }
 
 type UninstallModuleRequest struct {
-	APIVersion    string `json:"api_version,omitempty"`
-	RequestID     string `json:"request_id"`
-	Module        string `json:"module"`
-	ServiceName   string `json:"service_name"`
-	UnitPath      string `json:"unit_path,omitempty"`
-	BinaryPath    string `json:"binary_path,omitempty"`
-	EnvFilePath   string `json:"env_file_path,omitempty"`
-	NginxSitePath string `json:"nginx_site_path,omitempty"`
+	APIVersion    string   `json:"api_version,omitempty"`
+	RequestID     string   `json:"request_id"`
+	Module        string   `json:"module"`
+	ServiceName   string   `json:"service_name"`
+	UnitPath      string   `json:"unit_path,omitempty"`
+	BinaryPath    string   `json:"binary_path,omitempty"`
+	EnvFilePath   string   `json:"env_file_path,omitempty"`
+	NginxSitePath string   `json:"nginx_site_path,omitempty"`
+	AssetPaths    []string `json:"asset_paths,omitempty"`
 }
 
 type UninstallModuleResult struct {
@@ -155,6 +157,7 @@ type InstalledModuleRecord struct {
 	BinaryPath            string               `json:"binary_path,omitempty"`
 	EnvFilePath           string               `json:"env_file_path,omitempty"`
 	NginxSitePath         string               `json:"nginx_site_path,omitempty"`
+	AssetPaths            []string             `json:"asset_paths,omitempty"`
 	Endpoint              string               `json:"endpoint,omitempty"`
 	Status                string               `json:"status"`
 	Health                string               `json:"health,omitempty"`
@@ -181,6 +184,7 @@ type ArtifactManifest struct {
 	Runtime          string                   `json:"runtime"`
 	Capabilities     ArtifactCapabilities     `json:"capabilities"`
 	Binary           ArtifactBinarySpec       `json:"binary"`
+	Assets           []ArtifactAssetSpec      `json:"assets,omitempty"`
 	Service          ArtifactServiceSpec      `json:"service"`
 	Nginx            ArtifactNginxSpec        `json:"nginx"`
 	Env              ArtifactEnvSpec          `json:"env"`
@@ -201,6 +205,11 @@ type ArtifactBinarySpec struct {
 	Path        string `json:"path"`
 	InstallPath string `json:"install_path"`
 	Mode        string `json:"mode"`
+}
+
+type ArtifactAssetSpec struct {
+	Path        string `json:"path"`
+	InstallPath string `json:"install_path"`
 }
 
 type ArtifactServiceSpec struct {

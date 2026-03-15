@@ -199,6 +199,7 @@ func executeInstallModule(
 		BinaryPath:            result.BinaryPath,
 		EnvFilePath:           result.EnvFilePath,
 		NginxSitePath:         result.NginxSitePath,
+		AssetPaths:            append([]string(nil), result.AssetPaths...),
 		Endpoint:              result.Endpoint,
 		Status:                result.Status,
 		Health:                result.Health,
@@ -375,9 +376,15 @@ func RestartModule(ctx context.Context, req *RestartModuleRequest) (*RestartModu
 			}
 			return ""
 		}(),
-		Status:      InstallStatusInstalled,
-		Health:      ModuleHealthHealthy,
-		ObservedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		AssetPaths: func() []string {
+			if record != nil {
+				return append([]string(nil), record.AssetPaths...)
+			}
+			return nil
+		}(),
+		Status:     InstallStatusInstalled,
+		Health:     ModuleHealthHealthy,
+		ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Capabilities: func() ArtifactCapabilities {
 			if record != nil {
 				return record.Capabilities
@@ -551,6 +558,26 @@ func UninstallModule(ctx context.Context, req *UninstallModuleRequest) (*Uninsta
 		if path == "" {
 			continue
 		}
+		if err := removePathIfExists(path); err != nil {
+			_ = appendAuditEvent(auditEvent{
+				Action:    "uninstall",
+				Module:    strings.TrimSpace(req.Module),
+				Runtime:   runtime,
+				Status:    InstallStatusFailed,
+				OK:        false,
+				ErrorText: strings.TrimSpace(err.Error()),
+			})
+			appendLog(InstallStageApply, err.Error())
+			return &UninstallModuleResponse{
+				APIVersion: InstallerRPCVersionV1,
+				OK:         false,
+				Result:     failedUninstallResult(*req, runtime),
+				Logs:       logs,
+				ErrorText:  strings.TrimSpace(err.Error()),
+			}, nil
+		}
+	}
+	for _, path := range req.AssetPaths {
 		if err := removePathIfExists(path); err != nil {
 			_ = appendAuditEvent(auditEvent{
 				Action:    "uninstall",
@@ -759,7 +786,7 @@ func removePathIfExists(path string) error {
 	if trimmed == "" {
 		return nil
 	}
-	if err := os.Remove(trimmed); err != nil && !os.IsNotExist(err) {
+	if err := os.RemoveAll(trimmed); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove %s failed: %w", trimmed, err)
 	}
 	return nil

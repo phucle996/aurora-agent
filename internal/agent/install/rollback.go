@@ -13,6 +13,7 @@ import (
 type backupState struct {
 	Path       string
 	Existed    bool
+	IsDir      bool
 	BackupPath string
 }
 
@@ -50,16 +51,22 @@ func (r *installRollback) Capture(path string) error {
 		}
 		return fmt.Errorf("stat rollback target failed: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("rollback only supports regular files: %s", target)
-	}
 	backupPath := filepath.Join(r.root, fmt.Sprintf("%d.bak", len(r.backups)))
-	if err := copyFile(target, backupPath, info.Mode()); err != nil {
-		return fmt.Errorf("backup file failed: %w", err)
+	if info.IsDir() {
+		if err := copyDir(target, backupPath); err != nil {
+			return fmt.Errorf("backup dir failed: %w", err)
+		}
+	} else if info.Mode().IsRegular() {
+		if err := copyFile(target, backupPath, info.Mode()); err != nil {
+			return fmt.Errorf("backup file failed: %w", err)
+		}
+	} else {
+		return fmt.Errorf("rollback only supports regular files or directories: %s", target)
 	}
 	r.backups[target] = backupState{
 		Path:       target,
 		Existed:    true,
+		IsDir:      info.IsDir(),
 		BackupPath: backupPath,
 	}
 	return nil
@@ -78,8 +85,18 @@ func (r *installRollback) Restore(ctx context.Context, runner CommandRunner, man
 	}
 	for _, backup := range r.backups {
 		if !backup.Existed {
-			if err := os.Remove(strings.TrimSpace(backup.Path)); err != nil && !os.IsNotExist(err) {
+			if err := os.RemoveAll(strings.TrimSpace(backup.Path)); err != nil && !os.IsNotExist(err) {
 				restoreErrs = append(restoreErrs, fmt.Errorf("remove %s failed: %w", backup.Path, err))
+			}
+			continue
+		}
+		if err := os.RemoveAll(strings.TrimSpace(backup.Path)); err != nil && !os.IsNotExist(err) {
+			restoreErrs = append(restoreErrs, fmt.Errorf("remove %s failed: %w", backup.Path, err))
+			continue
+		}
+		if backup.IsDir {
+			if err := copyDir(backup.BackupPath, backup.Path); err != nil {
+				restoreErrs = append(restoreErrs, fmt.Errorf("restore %s failed: %w", backup.Path, err))
 			}
 			continue
 		}
@@ -143,4 +160,37 @@ func copyFile(source, destination string, mode os.FileMode) error {
 		return err
 	}
 	return dst.Close()
+}
+
+func copyDir(source, destination string) error {
+	info, err := os.Stat(strings.TrimSpace(source))
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", source)
+	}
+	if err := os.MkdirAll(strings.TrimSpace(destination), info.Mode()); err != nil {
+		return err
+	}
+	return filepath.Walk(strings.TrimSpace(source), func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == strings.TrimSpace(source) {
+			return nil
+		}
+		rel, err := filepath.Rel(strings.TrimSpace(source), path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(strings.TrimSpace(destination), rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("copy dir only supports regular files or directories: %s", path)
+		}
+		return copyFile(path, target, info.Mode())
+	})
 }
