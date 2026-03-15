@@ -195,6 +195,10 @@ func executeInstallModule(
 		Version:               result.Version,
 		Runtime:               result.Runtime,
 		ServiceName:           result.ServiceName,
+		UnitPath:              result.UnitPath,
+		BinaryPath:            result.BinaryPath,
+		EnvFilePath:           result.EnvFilePath,
+		NginxSitePath:         result.NginxSitePath,
 		Endpoint:              result.Endpoint,
 		Status:                result.Status,
 		Health:                result.Health,
@@ -347,6 +351,30 @@ func RestartModule(ctx context.Context, req *RestartModuleRequest) (*RestartModu
 		Module:      strings.TrimSpace(req.Module),
 		Runtime:     runtime,
 		ServiceName: serviceName,
+		UnitPath: func() string {
+			if record != nil {
+				return record.UnitPath
+			}
+			return ""
+		}(),
+		BinaryPath: func() string {
+			if record != nil {
+				return record.BinaryPath
+			}
+			return ""
+		}(),
+		EnvFilePath: func() string {
+			if record != nil {
+				return record.EnvFilePath
+			}
+			return ""
+		}(),
+		NginxSitePath: func() string {
+			if record != nil {
+				return record.NginxSitePath
+			}
+			return ""
+		}(),
 		Status:      InstallStatusInstalled,
 		Health:      ModuleHealthHealthy,
 		ObservedAt:  time.Now().UTC().Format(time.RFC3339Nano),

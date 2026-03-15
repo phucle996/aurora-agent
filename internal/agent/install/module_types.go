@@ -65,6 +65,10 @@ type InstallModuleResult struct {
 	Version               string               `json:"version"`
 	Runtime               string               `json:"runtime"`
 	ServiceName           string               `json:"service_name,omitempty"`
+	UnitPath              string               `json:"unit_path,omitempty"`
+	BinaryPath            string               `json:"binary_path,omitempty"`
+	EnvFilePath           string               `json:"env_file_path,omitempty"`
+	NginxSitePath         string               `json:"nginx_site_path,omitempty"`
 	Endpoint              string               `json:"endpoint,omitempty"`
 	Status                string               `json:"status"`
 	Health                string               `json:"health,omitempty"`
@@ -147,6 +151,10 @@ type InstalledModuleRecord struct {
 	Version               string               `json:"version"`
 	Runtime               string               `json:"runtime"`
 	ServiceName           string               `json:"service_name,omitempty"`
+	UnitPath              string               `json:"unit_path,omitempty"`
+	BinaryPath            string               `json:"binary_path,omitempty"`
+	EnvFilePath           string               `json:"env_file_path,omitempty"`
+	NginxSitePath         string               `json:"nginx_site_path,omitempty"`
 	Endpoint              string               `json:"endpoint,omitempty"`
 	Status                string               `json:"status"`
 	Health                string               `json:"health,omitempty"`

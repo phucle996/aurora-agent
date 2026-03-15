@@ -1,6 +1,7 @@
 package adminrpc
 
 import (
+	runtimev1 "github.com/phucle996/aurora-proto/runtimev1"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -8,8 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func (c *HeartbeatClient) maybeRenewClientCertificate(ctx context.Context) error {
@@ -69,35 +68,23 @@ func (c *HeartbeatClient) renewClientCertificate(ctx context.Context) error {
 		defer cancel()
 	}
 
-	conn := c.currentConn()
-	if conn == nil {
-		if err := c.reconnect(); err != nil {
-			return err
-		}
-		conn = c.currentConn()
-		if conn == nil {
-			return fmt.Errorf("admin rpc connection is unavailable")
-		}
-	}
-
-	req, err := structpb.NewStruct(map[string]any{
-		"csr_pem":        strings.TrimSpace(string(clientCSRPEM)),
-		"server_csr_pem": strings.TrimSpace(string(serverCSRPEM)),
-		"hostname":       strings.TrimSpace(c.cfg.Hostname),
-		"ip":             strings.TrimSpace(c.cfg.AgentIP),
-		"cluster_id":     strings.TrimSpace(c.cfg.ClusterID),
-	})
-	if err != nil {
-		return err
-	}
-	resp := &structpb.Struct{}
-	if err := conn.Invoke(callCtx, runtimeRenewAgentCertPath, req, resp); err != nil {
+	var resp *runtimev1.RenewAgentCertificateResponse
+	if err := c.invokeWithRecovery(callCtx, func(client runtimev1.RuntimeServiceClient) error {
+		var callErr error
+		resp, callErr = client.RenewAgentCertificate(callCtx, &runtimev1.RenewAgentCertificateRequest{
+			CsrPem:       strings.TrimSpace(string(clientCSRPEM)),
+			ServerCsrPem: strings.TrimSpace(string(serverCSRPEM)),
+			Hostname:     strings.TrimSpace(c.cfg.Hostname),
+			Ip:           strings.TrimSpace(c.cfg.AgentIP),
+		})
+		return callErr
+	}); err != nil {
 		return err
 	}
 
-	clientCertPEM := strings.TrimSpace(readStructString(resp, "client_cert_pem"))
-	serverCertPEM := strings.TrimSpace(readStructString(resp, "server_cert_pem"))
-	adminServerCAPEM := strings.TrimSpace(readStructString(resp, "admin_server_ca_pem"))
+	clientCertPEM := strings.TrimSpace(resp.GetClientCertPem())
+	serverCertPEM := strings.TrimSpace(resp.GetServerCertPem())
+	adminServerCAPEM := strings.TrimSpace(resp.GetAdminServerCaPem())
 	if clientCertPEM == "" || serverCertPEM == "" || adminServerCAPEM == "" {
 		return fmt.Errorf("renew certificate response missing cert chain")
 	}

@@ -2,6 +2,7 @@ package adminrpc
 
 import (
 	"aurora-agent/internal/config"
+	runtimev1 "github.com/phucle996/aurora-proto/runtimev1"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,15 +16,9 @@ import (
 )
 
 const (
-	runtimeReportAgentHeartbeatPath  = "/admin.transport.runtime.v1.RuntimeService/ReportAgentHeartbeat"
-	runtimeBootstrapAgentPath        = "/admin.transport.runtime.v1.RuntimeService/BootstrapAgent"
-	runtimeRenewAgentCertPath        = "/admin.transport.runtime.v1.RuntimeService/RenewAgentCertificate"
-	runtimeGetAgentMetricsPolicyPath = "/admin.transport.runtime.v1.RuntimeService/GetAgentMetricsPolicy"
-	runtimeReportAgentMetricsPath    = "/admin.transport.runtime.v1.RuntimeService/ReportAgentMetrics"
-	runtimeGetHostRoutingPath        = "/admin.transport.runtime.v1.RuntimeService/GetHostRoutingSnapshot"
-	defaultInvokeTimeout             = 8 * time.Second
-	certRenewCheckInterval           = 1 * time.Minute
-	hostRoutingSyncInterval          = 1 * time.Minute
+	defaultInvokeTimeout    = 8 * time.Second
+	certRenewCheckInterval  = 1 * time.Minute
+	hostRoutingSyncInterval = 1 * time.Minute
 )
 
 type HeartbeatPayload struct {
@@ -138,6 +133,13 @@ func (c *HeartbeatClient) currentConn() *gogrpc.ClientConn {
 	c.connMu.RLock()
 	defer c.connMu.RUnlock()
 	return c.conn
+}
+
+func (c *HeartbeatClient) runtimeClient(conn *gogrpc.ClientConn) runtimev1.RuntimeServiceClient {
+	if conn == nil {
+		return nil
+	}
+	return runtimev1.NewRuntimeServiceClient(conn)
 }
 
 func normalizeAdminRPCTarget(endpoint string) (target string, serverName string, err error) {

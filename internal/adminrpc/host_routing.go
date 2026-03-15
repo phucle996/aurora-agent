@@ -1,6 +1,7 @@
 package adminrpc
 
 import (
+	runtimev1 "github.com/phucle996/aurora-proto/runtimev1"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -8,8 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type hostRoutingEntry struct {
@@ -42,18 +41,18 @@ func (c *HeartbeatClient) syncHostRoutingSnapshot(ctx context.Context, agentID s
 	callCtx, cancel := context.WithTimeout(ctx, defaultInvokeTimeout)
 	defer cancel()
 
-	req, err := structpb.NewStruct(map[string]any{
-		"agent_id": strings.TrimSpace(agentID),
-	})
-	if err != nil {
-		return err
-	}
-	resp := &structpb.Struct{}
-	if err := c.invokeWithRecovery(callCtx, runtimeGetHostRoutingPath, req, resp); err != nil {
+	var resp *runtimev1.GetHostRoutingSnapshotResponse
+	if err := c.invokeWithRecovery(callCtx, func(client runtimev1.RuntimeServiceClient) error {
+		var callErr error
+		resp, callErr = client.GetHostRoutingSnapshot(callCtx, &runtimev1.GetHostRoutingSnapshotRequest{
+			AgentId: strings.TrimSpace(agentID),
+		})
+		return callErr
+	}); err != nil {
 		return err
 	}
 
-	entries := readHostRoutingEntries(resp, "items")
+	entries := readHostRoutingEntries(resp)
 	snapshotHash := computeHostRoutingSnapshotHash(entries)
 
 	c.hostRoutingMu.Lock()
@@ -73,30 +72,22 @@ func (c *HeartbeatClient) syncHostRoutingSnapshot(ctx context.Context, agentID s
 	return nil
 }
 
-func readHostRoutingEntries(req *structpb.Struct, key string) []hostRoutingEntry {
-	if req == nil {
+func readHostRoutingEntries(resp *runtimev1.GetHostRoutingSnapshotResponse) []hostRoutingEntry {
+	if resp == nil {
 		return nil
 	}
-	field, ok := req.GetFields()[key]
-	if !ok || field == nil || field.GetListValue() == nil {
-		return nil
-	}
-	values := field.GetListValue().GetValues()
-	out := make([]hostRoutingEntry, 0, len(values))
-	for _, value := range values {
-		if value == nil || value.GetStructValue() == nil {
+	items := resp.GetItems()
+	out := make([]hostRoutingEntry, 0, len(items))
+	for _, value := range items {
+		if value == nil {
 			continue
 		}
-		fields := value.GetStructValue().GetFields()
-		host := strings.TrimSpace(fields["host"].GetStringValue())
-		address := strings.TrimSpace(fields["address"].GetStringValue())
+		host := strings.TrimSpace(value.GetHost())
+		address := strings.TrimSpace(value.GetAddress())
 		if host == "" || address == "" {
 			continue
 		}
-		out = append(out, hostRoutingEntry{
-			Host:    host,
-			Address: address,
-		})
+		out = append(out, hostRoutingEntry{Host: host, Address: address})
 	}
 	return out
 }

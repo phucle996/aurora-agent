@@ -2,6 +2,7 @@ package adminrpc
 
 import (
 	"aurora-agent/internal/config"
+	runtimev1 "github.com/phucle996/aurora-proto/runtimev1"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -19,7 +20,6 @@ import (
 
 	gogrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func ensureAgentClientCertificate(
@@ -58,31 +58,27 @@ func ensureAgentClientCertificate(
 
 	callCtx, cancel := context.WithTimeout(context.Background(), defaultInvokeTimeout)
 	defer cancel()
-	req, err := structpb.NewStruct(map[string]any{
-		"node_id":             strings.TrimSpace(cfg.NodeID),
-		"cluster_id":          strings.TrimSpace(cfg.ClusterID),
-		"service_id":          strings.TrimSpace(cfg.ServiceID),
-		"role":                strings.TrimSpace(cfg.Role),
-		"hostname":            strings.TrimSpace(cfg.Hostname),
-		"ip":                  strings.TrimSpace(cfg.AgentIP),
-		"bootstrap_token":     strings.TrimSpace(cfg.BootstrapToken),
-		"csr_pem":             strings.TrimSpace(string(clientCSRPEM)),
-		"server_csr_pem":      strings.TrimSpace(string(serverCSRPEM)),
-		"agent_probe_addr":    strings.TrimSpace(cfg.ProbeListenAddr),
-		"agent_grpc_endpoint": strings.TrimSpace(cfg.AgentGRPCEndpoint),
-		"platform":            strings.TrimSpace(cfg.Platform),
+	resp, err := runtimev1.NewRuntimeServiceClient(conn).BootstrapAgent(callCtx, &runtimev1.BootstrapAgentRequest{
+		NodeId:            strings.TrimSpace(cfg.NodeID),
+		ClusterId:         strings.TrimSpace(cfg.ClusterID),
+		ServiceId:         strings.TrimSpace(cfg.ServiceID),
+		Role:              strings.TrimSpace(cfg.Role),
+		Hostname:          strings.TrimSpace(cfg.Hostname),
+		Ip:                strings.TrimSpace(cfg.AgentIP),
+		BootstrapToken:    strings.TrimSpace(cfg.BootstrapToken),
+		CsrPem:            strings.TrimSpace(string(clientCSRPEM)),
+		ServerCsrPem:      strings.TrimSpace(string(serverCSRPEM)),
+		AgentProbeAddr:    strings.TrimSpace(cfg.ProbeListenAddr),
+		AgentGrpcEndpoint: strings.TrimSpace(cfg.AgentGRPCEndpoint),
+		Platform:          strings.TrimSpace(cfg.Platform),
 	})
 	if err != nil {
-		return fmt.Errorf("build bootstrap request failed: %w", err)
-	}
-	resp := &structpb.Struct{}
-	if err := conn.Invoke(callCtx, runtimeBootstrapAgentPath, req, resp); err != nil {
 		return fmt.Errorf("bootstrap agent rpc failed: %w", err)
 	}
 
-	clientCertPEM := strings.TrimSpace(readStructString(resp, "client_cert_pem"))
-	serverCertPEM := strings.TrimSpace(readStructString(resp, "server_cert_pem"))
-	adminServerCAPEM := strings.TrimSpace(readStructString(resp, "admin_server_ca_pem"))
+	clientCertPEM := strings.TrimSpace(resp.GetClientCertPem())
+	serverCertPEM := strings.TrimSpace(resp.GetServerCertPem())
+	adminServerCAPEM := strings.TrimSpace(resp.GetAdminServerCaPem())
 	if clientCertPEM == "" || serverCertPEM == "" || adminServerCAPEM == "" {
 		return fmt.Errorf("bootstrap rpc response missing certificates")
 	}

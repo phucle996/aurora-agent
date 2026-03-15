@@ -2,12 +2,11 @@ package adminrpc
 
 import (
 	"aurora-agent/internal/model"
+	runtimev1 "github.com/phucle996/aurora-proto/runtimev1"
 	"context"
 	"fmt"
 	"strings"
 	"time"
-
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload HeartbeatPayload) error {
@@ -15,17 +14,14 @@ func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload Heartbeat
 		return fmt.Errorf("heartbeat client is nil")
 	}
 
-	req, err := structpb.NewStruct(map[string]any{
-		"agent_id":            strings.TrimSpace(payload.AgentID),
-		"hostname":            strings.TrimSpace(payload.Hostname),
-		"agent_version":       strings.TrimSpace(payload.AgentVersion),
-		"agent_probe_addr":    strings.TrimSpace(payload.AgentProbeAddr),
-		"agent_grpc_endpoint": strings.TrimSpace(payload.AgentGRPCEndpoint),
-		"platform":            strings.TrimSpace(payload.Platform),
-		"architecture":        strings.TrimSpace(payload.Architecture),
-	})
-	if err != nil {
-		return fmt.Errorf("build heartbeat request failed: %w", err)
+	req := &runtimev1.ReportAgentHeartbeatRequest{
+		AgentId:           strings.TrimSpace(payload.AgentID),
+		Hostname:          strings.TrimSpace(payload.Hostname),
+		AgentVersion:      strings.TrimSpace(payload.AgentVersion),
+		AgentProbeAddr:    strings.TrimSpace(payload.AgentProbeAddr),
+		AgentGrpcEndpoint: strings.TrimSpace(payload.AgentGRPCEndpoint),
+		Platform:          strings.TrimSpace(payload.Platform),
+		Architecture:      strings.TrimSpace(payload.Architecture),
 	}
 
 	callCtx := ctx
@@ -35,8 +31,10 @@ func (c *HeartbeatClient) ReportHeartbeat(ctx context.Context, payload Heartbeat
 		defer cancel()
 	}
 
-	resp := &structpb.Struct{}
-	if err := c.invokeWithRecovery(callCtx, runtimeReportAgentHeartbeatPath, req, resp); err != nil {
+	if err := c.invokeWithRecovery(callCtx, func(client runtimev1.RuntimeServiceClient) error {
+		_, err := client.ReportAgentHeartbeat(callCtx, req)
+		return err
+	}); err != nil {
 		return fmt.Errorf("report heartbeat failed: %w", err)
 	}
 	if err := c.maybeSyncHostRouting(callCtx, strings.TrimSpace(payload.AgentID)); err != nil && c.logger != nil {
@@ -54,14 +52,13 @@ func (c *HeartbeatClient) GetMetricsPolicy(ctx context.Context, agentID string) 
 	}
 	callCtx, cancel := context.WithTimeout(ctx, defaultInvokeTimeout)
 	defer cancel()
-	req, err := structpb.NewStruct(map[string]any{
-		"agent_id": strings.TrimSpace(agentID),
-	})
-	if err != nil {
-		return MetricsPolicy{}, err
-	}
-	resp := &structpb.Struct{}
-	if err := c.invokeWithRecovery(callCtx, runtimeGetAgentMetricsPolicyPath, req, resp); err != nil {
+	req := &runtimev1.GetAgentMetricsPolicyRequest{AgentId: strings.TrimSpace(agentID)}
+	var resp *runtimev1.GetAgentMetricsPolicyResponse
+	if err := c.invokeWithRecovery(callCtx, func(client runtimev1.RuntimeServiceClient) error {
+		var callErr error
+		resp, callErr = client.GetAgentMetricsPolicy(callCtx, req)
+		return callErr
+	}); err != nil {
 		return MetricsPolicy{}, err
 	}
 
@@ -73,13 +70,15 @@ func (c *HeartbeatClient) GetMetricsPolicy(ctx context.Context, agentID string) 
 		MaxBatchRecords:      2048,
 	}
 	p := defaultPolicy
-	p.StreamEnabled = readStructBool(resp, "stream_enabled", defaultPolicy.StreamEnabled)
-	p.BatchFlushInterval = readStructSecondsAsDuration(resp, "batch_flush_interval_seconds", defaultPolicy.BatchFlushInterval)
-	p.BatchSampleInterval = readStructSecondsAsDuration(resp, "batch_sample_interval_seconds", defaultPolicy.BatchSampleInterval)
-	p.StreamSampleInterval = readStructSecondsAsDuration(resp, "stream_sample_interval_seconds", defaultPolicy.StreamSampleInterval)
-	p.MaxBatchRecords = int(readStructNumber(resp, "max_batch_records", float64(defaultPolicy.MaxBatchRecords)))
-	if p.MaxBatchRecords <= 0 {
-		p.MaxBatchRecords = defaultPolicy.MaxBatchRecords
+	if resp == nil {
+		return p, nil
+	}
+	p.StreamEnabled = resp.GetStreamEnabled()
+	p.BatchFlushInterval = secondsAsDuration(resp.GetBatchFlushIntervalSeconds(), defaultPolicy.BatchFlushInterval)
+	p.BatchSampleInterval = secondsAsDuration(resp.GetBatchSampleIntervalSeconds(), defaultPolicy.BatchSampleInterval)
+	p.StreamSampleInterval = secondsAsDuration(resp.GetStreamSampleIntervalSeconds(), defaultPolicy.StreamSampleInterval)
+	if max := int(resp.GetMaxBatchRecords()); max > 0 {
+		p.MaxBatchRecords = max
 	}
 	return p, nil
 }
@@ -97,68 +96,64 @@ func (c *HeartbeatClient) ReportMetrics(
 		return nil
 	}
 
-	list := make([]any, 0, len(records))
+	items := make([]*runtimev1.AgentMetricRecord, 0, len(records))
 	for _, record := range records {
-		services := make([]any, 0, len(record.Services))
+		services := make([]*runtimev1.AgentServiceMetricRecord, 0, len(record.Services))
 		for _, serviceRecord := range record.Services {
-			services = append(services, map[string]any{
-				"service":               serviceRecord.Service,
-				"cpu_usage_percent":     serviceRecord.CPUUsagePercent,
-				"memory_used_bytes":     serviceRecord.MemoryUsedBytes,
-				"disk_read_bps":         serviceRecord.DiskReadBps,
-				"disk_write_bps":        serviceRecord.DiskWriteBps,
-				"network_rx_bps":        serviceRecord.NetworkRxBps,
-				"network_tx_bps":        serviceRecord.NetworkTxBps,
-				"gpu_util_percent":      serviceRecord.GPUUtilPercent,
-				"gpu_memory_used_bytes": serviceRecord.GPUMemoryUsedBytes,
+			services = append(services, &runtimev1.AgentServiceMetricRecord{
+				Service:            serviceRecord.Service,
+				CpuUsagePercent:    serviceRecord.CPUUsagePercent,
+				MemoryUsedBytes:    serviceRecord.MemoryUsedBytes,
+				DiskReadBps:        serviceRecord.DiskReadBps,
+				DiskWriteBps:       serviceRecord.DiskWriteBps,
+				NetworkRxBps:       serviceRecord.NetworkRxBps,
+				NetworkTxBps:       serviceRecord.NetworkTxBps,
+				GpuUtilPercent:     serviceRecord.GPUUtilPercent,
+				GpuMemoryUsedBytes: serviceRecord.GPUMemoryUsedBytes,
 			})
 		}
-
-		list = append(list, map[string]any{
-			"ts_ms":              record.TimestampUnixMillis,
-			"cpu_usage_percent":  record.CPUUsagePercent,
-			"memory_used_bytes":  record.MemoryUsedBytes,
-			"memory_total_bytes": record.MemoryTotalBytes,
-			"disk_read_bps":      record.DiskReadBps,
-			"disk_write_bps":     record.DiskWriteBps,
-			"network_rx_bps":     record.NetworkRxBps,
-			"network_tx_bps":     record.NetworkTxBps,
-			"gpu": map[string]any{
-				"count":              record.GPU.Count,
-				"util_percent":       record.GPU.UtilPercent,
-				"memory_used_bytes":  record.GPU.MemoryUsedBytes,
-				"memory_total_bytes": record.GPU.MemoryTotalBytes,
+		items = append(items, &runtimev1.AgentMetricRecord{
+			TsMs:             record.TimestampUnixMillis,
+			CpuUsagePercent:  record.CPUUsagePercent,
+			MemoryUsedBytes:  record.MemoryUsedBytes,
+			MemoryTotalBytes: record.MemoryTotalBytes,
+			DiskReadBps:      record.DiskReadBps,
+			DiskWriteBps:     record.DiskWriteBps,
+			NetworkRxBps:     record.NetworkRxBps,
+			NetworkTxBps:     record.NetworkTxBps,
+			Gpu: &runtimev1.AgentGPUMetricRecord{
+				Count:            record.GPU.Count,
+				UtilPercent:      record.GPU.UtilPercent,
+				MemoryUsedBytes:  record.GPU.MemoryUsedBytes,
+				MemoryTotalBytes: record.GPU.MemoryTotalBytes,
 			},
-			"services":       services,
-			"uptime_seconds": record.UptimeSeconds,
+			Services:      services,
+			UptimeSeconds: record.UptimeSeconds,
 		})
 	}
 
-	req, err := structpb.NewStruct(map[string]any{
-		"agent_id": strings.TrimSpace(agentID),
-		"mode":     strings.TrimSpace(strings.ToLower(mode)),
-		"records":  list,
-	})
-	if err != nil {
-		return err
+	req := &runtimev1.ReportAgentMetricsRequest{
+		AgentId: strings.TrimSpace(agentID),
+		Mode:    strings.TrimSpace(strings.ToLower(mode)),
+		Records: items,
 	}
 	callCtx, cancel := context.WithTimeout(ctx, defaultInvokeTimeout)
 	defer cancel()
-	resp := &structpb.Struct{}
-	if err := c.invokeWithRecovery(callCtx, runtimeReportAgentMetricsPath, req, resp); err != nil {
+	return c.invokeWithRecovery(callCtx, func(client runtimev1.RuntimeServiceClient) error {
+		_, err := client.ReportAgentMetrics(callCtx, req)
 		return err
-	}
-	return nil
+	})
 }
 
 func (c *HeartbeatClient) invokeWithRecovery(
 	ctx context.Context,
-	method string,
-	req *structpb.Struct,
-	resp *structpb.Struct,
+	invoke func(runtimev1.RuntimeServiceClient) error,
 ) error {
 	if c == nil {
 		return fmt.Errorf("heartbeat client is nil")
+	}
+	if invoke == nil {
+		return fmt.Errorf("runtime invoke callback is nil")
 	}
 	if renewErr := c.maybeRenewClientCertificate(ctx); renewErr != nil && c.logger != nil {
 		c.logger.Warn("preflight certificate renewal check failed", "error", renewErr)
@@ -174,7 +169,7 @@ func (c *HeartbeatClient) invokeWithRecovery(
 		}
 	}
 
-	err := conn.Invoke(ctx, method, req, resp)
+	err := invoke(c.runtimeClient(conn))
 	if err == nil {
 		return nil
 	}
@@ -191,7 +186,7 @@ func (c *HeartbeatClient) invokeWithRecovery(
 	if retryConn == nil {
 		return fmt.Errorf("%w; reconnect failed: connection unavailable", classified)
 	}
-	retryErr := retryConn.Invoke(ctx, method, req, resp)
+	retryErr := invoke(c.runtimeClient(retryConn))
 	if retryErr == nil {
 		return nil
 	}
@@ -205,7 +200,7 @@ func (c *HeartbeatClient) invokeWithRecovery(
 			if reconnectErr := c.reconnect(); reconnectErr == nil {
 				lastConn := c.currentConn()
 				if lastConn != nil {
-					lastErr := lastConn.Invoke(ctx, method, req, resp)
+					lastErr := invoke(c.runtimeClient(lastConn))
 					if lastErr == nil {
 						return nil
 					}
@@ -218,4 +213,11 @@ func (c *HeartbeatClient) invokeWithRecovery(
 	}
 
 	return retryClassified
+}
+
+func secondsAsDuration(seconds int64, fallback time.Duration) time.Duration {
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
 }
